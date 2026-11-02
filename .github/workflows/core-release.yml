@@ -18,7 +18,7 @@ jobs:
 
       - name: Publish
         run: |
-          notes="Core $GITHUB_REF_NAME ($GITHUB_SHA). Stable installs follow the builds branch."
+          notes="Core $GITHUB_REF_NAME ($GITHUB_SHA). Stable installs follow the main branch."
           needs="$(grep -v '^\s*#' needs.txt 2>/dev/null | grep . | paste -sd, - | sed 's/,/, /g' || true)"
           [ -n "$needs" ] && notes="$notes"$'\n\n'"needs: $needs"
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest=false \

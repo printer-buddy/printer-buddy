@@ -189,7 +189,7 @@ branch() { git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknow
 # the branch updates follow: the channel's, unless another branch was picked
 core_branch() {
   case "$(branch)" in
-    nightly|builds|main|HEAD|unknown) [ "$(get_env PB_CHANNEL)" = nightly ] && echo nightly || echo builds ;;
+    nightly|builds|main|HEAD|unknown) [ "$(get_env PB_CHANNEL)" = nightly ] && echo nightly || echo main ;;
     *) branch ;;
   esac
 }
@@ -274,7 +274,7 @@ do_install() {
   ensure_env
   local b; b="$(core_branch)"
   if [ "$(branch)" != "$b" ] && git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
-    echo "Switching to the $b branch for the ${b/builds/stable} channel..."
+    echo "Switching to the $b branch for the ${b/main/stable} channel..."
     git -C "$DIR" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
     git -C "$DIR" fetch -q origin && git -C "$DIR" checkout -q -B "$b" "origin/$b" && git -C "$DIR" branch -q -u "origin/$b" \
       || echo "Couldn't switch to $b, staying on $(branch)."

@@ -1,0 +1,104 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version like 1.2.8. Leave blank for the next one. An existing version rolls main back to it."
+        required: false
+        default: ""
+      bump:
+        description: "When the version is blank, raise the last one by"
+        type: choice
+        options:
+          - "x.x.0 -> x.x.1"
+          - "x.0.0 -> x.1.0"
+          - "0.0.0 -> 1.0.0"
+        default: "x.x.0 -> x.x.1"
+
+permissions:
+  contents: write
+  actions: write
+  models: read
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      BUMP: ${{ inputs.bump }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: nightly
+          fetch-depth: 0
+
+      - name: Check the code
+        run: |
+          python3 -m compileall -q app
+          for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+
+      - name: Pick the version
+        id: ver
+        run: |
+          VERSION="${VERSION#core-}"; VERSION="${VERSION#v}"
+          last="$(git tag -l 'core-v*' | sed 's/^core-v//' | sort -V | tail -1)"
+          if [ -n "$VERSION" ] && git rev-parse -q --verify "refs/tags/core-v$VERSION" >/dev/null; then
+            echo "mode=rollback" >> "$GITHUB_OUTPUT"
+          else
+            if [ -z "$VERSION" ]; then
+              IFS=. read -r a b c <<< "${last:-1.0.0}"
+              a=${a:-0}; b=${b:-0}; c=${c:-0}
+              case "$BUMP" in "0.0.0"*) a=$((a+1)); b=0; c=0 ;; "x.0.0"*) b=$((b+1)); c=0 ;; *) c=$((c+1)) ;; esac
+              VERSION="$a.$b.$c"
+            fi
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          echo "Last release: ${last:-none}. This run: core-v$VERSION ($(grep mode= "$GITHUB_OUTPUT" | cut -d= -f2))"
+
+      - name: Roll main back
+        if: steps.ver.outputs.mode == 'rollback'
+        run: |
+          git push --force-with-lease origin "refs/tags/core-v${{ steps.ver.outputs.version }}^{commit}:refs/heads/main"
+          echo "main now points at core-v${{ steps.ver.outputs.version }}"
+
+      - name: List the changes
+        if: steps.ver.outputs.mode == 'release'
+        run: |
+          range="${{ steps.ver.outputs.last }}"; [ -n "$range" ] && range="core-v$range..HEAD" || range="HEAD"
+          git log --no-merges --pretty='- %s' $range | head -80 > changes.txt
+          [ -s changes.txt ] || echo "- No changes since the last release" > changes.txt
+          cat changes.txt
+
+      - name: Write the notes with AI
+        if: steps.ver.outputs.mode == 'release'
+        id: ai
+        continue-on-error: true
+        uses: actions/ai-inference@v1
+        with:
+          model: openai/gpt-4o-mini
+          system-prompt: "You write short release notes for Printer Buddy, a web app for 3D printers. Reply with a plain bullet list, at most 8 bullets, one short line each, no headings and no marketing language. Group related commits. Only describe what the commits say."
+          prompt-file: changes.txt
+
+      - name: Publish
+        if: steps.ver.outputs.mode == 'release'
+        env:
+          AI_NOTES: ${{ steps.ai.outputs.response }}
+        run: |
+          tag="core-v${{ steps.ver.outputs.version }}"
+          notes="$AI_NOTES"; [ -n "$notes" ] || notes="$(cat changes.txt)"
+          notes="$notes"$'\n\n'"Commit $GITHUB_SHA. Stable installs follow the main branch."
+          needs="$(grep -v '^\s*#' needs.txt 2>/dev/null | grep . | paste -sd, - | sed 's/,/, /g' || true)"
+          [ -n "$needs" ] && notes="$notes"$'\n\n'"needs: $needs"
+          git push --force-with-lease origin "HEAD:refs/heads/main"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            --title "Printer Buddy ${tag#core-}" --notes "$notes"
+
+      # releases made with github.token don't start other workflows, so start updates list here
+      - name: Update updates.txt
+        run: gh workflow run updates-list.yml --repo "$GITHUB_REPOSITORY"

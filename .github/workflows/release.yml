@@ -15,6 +15,10 @@ on:
           - "x.0.0 -> x.1.0"
           - "0.0.0 -> 1.0.0"
         default: "x.x.0 -> x.x.1"
+      test:
+        description: "Test run: do everything except publish, and show the version and notes in the run summary"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -62,7 +66,7 @@ jobs:
           echo "Last release: ${last:-none}. This run: core-v$VERSION ($(grep mode= "$GITHUB_OUTPUT" | cut -d= -f2))"
 
       - name: Roll main back
-        if: steps.ver.outputs.mode == 'rollback'
+        if: steps.ver.outputs.mode == 'rollback' && inputs.test != true
         run: |
           git push --force-with-lease origin "refs/tags/core-v${{ steps.ver.outputs.version }}^{commit}:refs/heads/main"
           echo "main now points at core-v${{ steps.ver.outputs.version }}"
@@ -79,14 +83,27 @@ jobs:
         if: steps.ver.outputs.mode == 'release'
         id: ai
         continue-on-error: true
-        uses: actions/ai-inference@v1
+        uses: actions/ai-inference@v2.1.1
         with:
           model: openai/gpt-4o-mini
           system-prompt: "You write short release notes for Printer Buddy, a web app for 3D printers. Reply with a plain bullet list, at most 8 bullets, one short line each, no headings and no marketing language. Group related commits. Only describe what the commits say."
           prompt-file: changes.txt
 
-      - name: Publish
+      - name: Show the notes
         if: steps.ver.outputs.mode == 'release'
+        env:
+          AI_NOTES: ${{ steps.ai.outputs.response }}
+        run: |
+          if [ -n "$AI_NOTES" ]; then src="written by AI"; notes="$AI_NOTES"; else src="AI notes failed, using the commit list"; notes="$(cat changes.txt)"; fi
+          {
+            echo "### core-v${{ steps.ver.outputs.version }}${{ inputs.test && ' (test, nothing published)' || '' }}"
+            echo "Notes: $src"
+            echo
+            echo "$notes"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish
+        if: steps.ver.outputs.mode == 'release' && inputs.test != true
         env:
           AI_NOTES: ${{ steps.ai.outputs.response }}
         run: |
@@ -101,4 +118,5 @@ jobs:
 
       # releases made with github.token don't start other workflows, so start updates list here
       - name: Update updates.txt
+        if: inputs.test != true
         run: gh workflow run updates-list.yml --repo "$GITHUB_REPOSITORY"

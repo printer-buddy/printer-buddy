@@ -78,6 +78,7 @@ jobs:
           git log --no-merges --pretty='- %s' $range | head -80 > changes.txt
           [ -s changes.txt ] || echo "- No changes since the last release" > changes.txt
           cat changes.txt
+          git log --no-merges --pretty=format:'--- %h%n%s%n%b' --stat=100 $range | head -c 60000 > details.txt
 
       - name: Write the notes with Copilot
         if: steps.ver.outputs.mode == 'release'
@@ -87,10 +88,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           npm install -g @github/copilot
-          out="$(copilot -s -p "You write short release notes for Printer Buddy, a web app for 3D printers. Reply with a plain bullet list, at most 8 bullets, one short line each, no headings and no marketing language. Group related commits. Only describe what the commits say. The commits:
-          $(cat changes.txt)")"
-          [ -n "$out" ]
-          { echo "response<<NOTES_END"; echo "$out"; echo "NOTES_END"; } >> "$GITHUB_OUTPUT"
+          cat > prompt.txt <<EOF
+          You write release notes for Printer Buddy, a web app for managing 3D printers. Use ONLY the commit log below. Do not run commands or read files.
+          Reply in Markdown, no preamble, grouped under these headings, leaving out any that would be empty:
+          ### New
+          ### Improved
+          ### Fixed
+          ### Behind the scenes
+          Under each, one bullet per change. Each bullet is one or two plain sentences saying what changed and what it means for someone using it. Merge related commits. No marketing language and no commit hashes.
+          The commit log (subject, description and files changed):
+          $(cat details.txt)
+          EOF
+          if out="$(copilot -s -p "$(cat prompt.txt)" 2> copilot.err)" && [ -n "$out" ]; then
+            { echo "response<<NOTES_END"; echo "$out"; echo "NOTES_END"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "Copilot failed:"; cat copilot.err; exit 1
+          fi
 
       - name: Show the notes
         if: steps.ver.outputs.mode == 'release'

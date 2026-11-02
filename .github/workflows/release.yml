@@ -89,17 +89,17 @@ jobs:
         run: |
           npm install -g @github/copilot
           cat > prompt.txt <<EOF
-          You write release notes for Printer Buddy, a web app for managing 3D printers. Use ONLY the commit log below. Do not run commands or read files.
+          You write release notes for Printer Buddy, a web app for managing 3D printers. Below is the list of commits with the files each one changed. For every commit, read the real code change with `git show <hash>` (you may also use `git diff` and `git log`) before you write about it, so you describe what the code does, not just what the message says. Only use those read-only git commands. Do not change anything.
           Reply in Markdown, no preamble, grouped under these headings, leaving out any that would be empty:
           ### New
           ### Improved
           ### Fixed
           ### Behind the scenes
-          Under each, one bullet per change. Each bullet is one or two plain sentences saying what changed and what it means for someone using it. Merge related commits. No marketing language and no commit hashes.
-          The commit log (subject, description and files changed):
+          Under each, one bullet per change. Each bullet is one or two plain sentences saying what changed and what it means for someone using it. Merge related commits. No marketing language and no commit hashes. Name the actual feature, screen or setting that changed.
+          The commits (hash, subject, description and files changed):
           $(cat details.txt)
           EOF
-          if out="$(copilot -s -p "$(cat prompt.txt)" 2> copilot.err)" && [ -n "$out" ]; then
+          if out="$(copilot -s -p "$(cat prompt.txt)" --allow-tool='shell(git show:*)' --allow-tool='shell(git diff:*)' --allow-tool='shell(git log:*)' 2> copilot.err)" && [ -n "$out" ]; then
             { echo "response<<NOTES_END"; echo "$out"; echo "NOTES_END"; } >> "$GITHUB_OUTPUT"
           else
             echo "Copilot failed:"; cat copilot.err; exit 1

@@ -89,7 +89,7 @@ jobs:
         run: |
           npm install -g @github/copilot
           cat > prompt.txt <<EOF
-          You write release notes for Printer Buddy, a web app for managing 3D printers. Below is the list of commits with the files each one changed. For every commit, read the real code change with `git show <hash>` (you may also use `git diff` and `git log`) before you write about it, so you describe what the code does, not just what the message says. Only use those read-only git commands. Do not change anything.
+          You write release notes for Printer Buddy, a web app for managing 3D printers. Below is the list of commits with the files each one changed. For every commit, read the real code change by running git show followed by the commit hash (you may also use git diff and git log) before you write about it, so you describe what the code does, not just what the message says. Only use those read-only git commands. Do not change anything.
           Reply in Markdown, no preamble, grouped under these headings, leaving out any that would be empty:
           ### New
           ### Improved

@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS shares (
     printer_id INTEGER NOT NULL,
     created_at REAL NOT NULL,
     expires_at REAL,
-    revoked    INTEGER NOT NULL DEFAULT 0
+    revoked    INTEGER NOT NULL DEFAULT 0,
+    until_print INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -51,6 +52,8 @@ class Store:
                 self.db.execute("ALTER TABLE printers ADD COLUMN aibox TEXT")
             if "aiarea" not in cols:
                 self.db.execute("ALTER TABLE printers ADD COLUMN aiarea TEXT")
+            if "until_print" not in {r["name"] for r in self.db.execute("PRAGMA table_info(shares)")}:
+                self.db.execute("ALTER TABLE shares ADD COLUMN until_print INTEGER NOT NULL DEFAULT 0")
 
     def list(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM printers ORDER BY id")]
@@ -90,10 +93,10 @@ class Store:
             self.db.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
                                 [(k, json.dumps(v)) for k, v in values.items()])
 
-    def add_share(self, code: str, pid: int, expires_at: float | None) -> dict:
+    def add_share(self, code: str, pid: int, expires_at: float | None, until_print: bool = False) -> dict:
         with self.db:
-            self.db.execute("INSERT INTO shares(code, printer_id, created_at, expires_at) VALUES (?,?,?,?)",
-                            (code, pid, time.time(), expires_at))
+            self.db.execute("INSERT INTO shares(code, printer_id, created_at, expires_at, until_print) VALUES (?,?,?,?,?)",
+                            (code, pid, time.time(), expires_at, 1 if until_print else 0))
         return self.get_share(code)
 
     def get_share(self, code: str) -> dict | None:
@@ -105,6 +108,10 @@ class Store:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM shares WHERE printer_id=? AND revoked=0 AND (expires_at IS NULL OR expires_at > ?) "
             "ORDER BY created_at DESC", (pid, now))]
+
+    def end_print_shares(self, pid: int):
+        with self.db:
+            self.db.execute("UPDATE shares SET revoked=1 WHERE printer_id=? AND until_print=1 AND revoked=0", (pid,))
 
     def revoke_share(self, code: str) -> bool:
         with self.db:

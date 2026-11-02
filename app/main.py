@@ -761,7 +761,7 @@ async def delete_timelapse(request: Request):
     return Response(status_code=204)
 
 
-SHARE_EXPIRY = {"1h": 3600, "1d": 86400, "7d": 7 * 86400, "never": None}
+SHARE_EXPIRY = {"1h": 3600, "1d": 86400, "7d": 7 * 86400, "never": None, "print": None}
 
 
 def remote_on() -> bool:
@@ -791,7 +791,7 @@ def share_url(request: Request, pid: int, code: str) -> str:
 
 def share_view(request: Request, row: dict) -> dict:
     return {"code": row["code"], "url": share_url(request, row["printer_id"], row["code"]),
-            "created_at": row["created_at"], "expires_at": row["expires_at"]}
+            "created_at": row["created_at"], "expires_at": row["expires_at"], "until_print": bool(row.get("until_print"))}
 
 
 async def share_user(request: Request):
@@ -807,8 +807,12 @@ async def create_share(request: Request):
     expiry = (await body(request)).get("expires", "1d")
     if expiry not in SHARE_EXPIRY:
         return err("bad expiry")
+    until = expiry == "print"
+    client = manager.clients.get(pid)
+    if until and (client.status.get("print_stats", {}).get("state") if client else None) not in ("printing", "paused"):
+        return err("no print is running on this printer", 409)
     seconds = SHARE_EXPIRY[expiry]
-    row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None)
+    row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None, until)
     return JSONResponse(share_view(request, row), status_code=201)
 
 
@@ -832,6 +836,9 @@ def _valid_share(request: Request):
     pid = request.path_params["pid"]
     if (not row or row["revoked"] or row["printer_id"] != pid or pid not in manager.clients
             or (row["expires_at"] and row["expires_at"] < time.time())):
+        return None
+    if row["until_print"] and manager.clients[pid].status.get("print_stats", {}).get("state") in ("complete", "cancelled", "error", "standby"):
+        store.revoke_share(row["code"])
         return None
     return pid
 

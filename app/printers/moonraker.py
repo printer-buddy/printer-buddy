@@ -307,6 +307,11 @@ class MoonrakerClient:
         self.tool_macros = sorted((n for n in names if re.fullmatch(r"gcode_macro [Tt]\d+", n)), key=lambda n: int(n.split(" ", 1)[1][1:]))
         for n in self.tool_macros:
             objects[n] = None
+        self.tc_tools = sorted(n for n in names if n.startswith("tool "))
+        if "toolchanger" in names:
+            objects["toolchanger"] = None
+        for n in self.tc_tools:
+            objects[n] = None
         if "gcode_macro SET_PRINT_STATS_INFO" in names:
             objects["gcode_macro SET_PRINT_STATS_INFO"] = ["pause_next_layer", "pause_at_layer"]
         for n in ("bed_mesh", "firmware_retraction", "quad_gantry_level", "z_tilt"):
@@ -580,6 +585,7 @@ class MoonrakerClient:
             "retraction": s.get("firmware_retraction"),
             "tools": self.tools_view() if live else None,
             "tool_changes": self.tool_changes_view() if live else None,
+            "toolchanger": self.toolchanger_view() if live else None,
             "leveled": {k: s.get(k, {}).get("applied") for k in ("quad_gantry_level", "z_tilt") if k in s},
             "bed_area": self.bed_area(),
             "mmu": self.mmu_view() if live else None,
@@ -627,6 +633,31 @@ class MoonrakerClient:
             else:
                 c = (st.get("color_data") or [[0, 0, 0, 0]])[0]
                 out.append({"id": n, "name": _pretty(n), "kind": "led", "color": list(c)})
+        return out
+
+    def toolchanger_view(self) -> dict | None:
+        tc = self.status.get("toolchanger")
+        if not isinstance(tc, dict):
+            return None
+        tools = []
+        for n in getattr(self, "tc_tools", []):
+            t = self.status.get(n) or {}
+            heater = t.get("heater") or t.get("extruder")
+            h = self.status.get(heater) or {}
+            tools.append({"name": t.get("name") or n.split(" ", 1)[1], "number": t.get("tool_number", -1), "active": bool(t.get("active")),
+                          "detect": t.get("detect_state"), "heater": heater, "temp": h.get("temperature"), "target": h.get("target")})
+        tools.sort(key=lambda t: (not isinstance(t["number"], int) or t["number"] < 0, t["number"] if isinstance(t["number"], int) else 0, t["name"]))
+        return {"status": tc.get("status"), "tool": tc.get("tool"), "number": tc.get("tool_number", -1),
+                "detected": tc.get("detected_tool"), "tools": tools}
+
+    def tool_heater_labels(self) -> dict[str, str]:
+        out = {}
+        for n in getattr(self, "tc_tools", []):
+            t = self.status.get(n) or {}
+            heater = t.get("heater") or t.get("extruder")
+            if heater:
+                num = t.get("tool_number", -1)
+                out[heater] = f"T{num}" if isinstance(num, int) and num >= 0 else (t.get("name") or n.split(" ", 1)[1])
         return out
 
     def tool_changes_view(self) -> list[dict] | None:
@@ -689,6 +720,7 @@ class MoonrakerClient:
 
     def sensors(self) -> list[dict]:
         out = []
+        label = self.tool_heater_labels()
         for obj in ["extruder", "heater_bed", *self.extras]:
             st = self.status.get(obj)
             if not isinstance(st, dict):
@@ -696,7 +728,7 @@ class MoonrakerClient:
             is_fan = obj == "fan" or obj.startswith(FAN_PREFIXES)
             kind = ("fan" if is_fan else "heater" if "target" in st and not obj.startswith("temperature_fan ")
                     else "sensor")
-            out.append({"id": obj, "name": _pretty(obj), "kind": kind,
+            out.append({"id": obj, "name": label.get(obj) or _pretty(obj), "kind": kind,
                         "temp": st.get("temperature"), "target": st.get("target"),
                         "power": st.get("power"), "speed": st.get("speed")})
         return out

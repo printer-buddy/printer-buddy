@@ -32,10 +32,10 @@ VENV = ROOT / ".venv" / "bin"
 HELPERS = ("/usr/local/lib/printer-buddy/root.sh", "/usr/local/lib/printer-buddy/streamer-root.sh")
 RELEASES = "https://api.github.com/repos/sterling5241/printer-buddy/releases?per_page=100"
 HDR = {"User-Agent": "printer-buddy", "Accept": "application/vnd.github+json"}
-CHANNEL_BRANCH = {"stable": "builds", "nightly": "nightly"}
+CHANNEL_BRANCH = {"stable": "main", "nightly": "nightly"}
 # setting -> choices (first one is the default)
 CHOICES = {"PB_UI": ("advanced",), "PB_NOTIFY": ("basic", "advanced"), "PB_AI": ("off", "basic", "heavy"),
-           "PB_VIDEO": ("snapshots", "live", "timelapse"), "PB_STREAM": ("off", "light", "basic", "full"),
+           "PB_VIDEO": ("snapshots", "live", "timelapse"), "PB_STREAM": ("off", "light", "basic", "advanced"),
            "PB_CHANNEL": ("stable", "nightly")}
 _releases: list | None = None
 
@@ -76,7 +76,7 @@ def run(*cmd) -> bool:
 def core_branch() -> str:
     """The branch core updates follow: the channel's, unless another branch was picked in the installer."""
     cur = git("rev-parse", "--abbrev-ref", "HEAD")
-    if cur in ("", "HEAD", "main", *CHANNEL_BRANCH.values()):
+    if cur in ("", "HEAD", "builds", *CHANNEL_BRANCH.values()):
         return CHANNEL_BRANCH[channel("core")]
     return cur
 

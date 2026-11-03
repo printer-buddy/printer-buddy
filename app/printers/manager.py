@@ -155,6 +155,8 @@ class Manager:
             self._emit(pid, event, v)
             if event == "started":
                 self._milestone[pid] = 0
+        if prev["state"] in ("printing", "paused") and v["state"] in ("complete", "cancelled", "error", "standby"):
+            self.store.end_print_shares(pid)
         if self.timelapse:
             self.timelapse.on_change(pid, prev, v)
         if self.ai:

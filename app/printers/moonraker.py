@@ -31,13 +31,18 @@ SUBSCRIBE = {
 
 SENSOR_PREFIXES = ("temperature_sensor ", "temperature_fan ", "heater_generic ")
 FAN_PREFIXES = ("heater_fan ", "controller_fan ", "fan_generic ")
-EXTRA_HEATERS = ("extruder1", "extruder2", "extruder3")
+EXTRA_HEATER = re.compile(r"extruder\d+")
 OUTPUT_PREFIXES = ("output_pin ", "led ", "neopixel ", "dotstar ", "pca9533 ", "pca9632 ")
 FSENSOR_PREFIXES = ("filament_switch_sensor ", "filament_motion_sensor ")
 MMU_FIELDS = ["enabled", "num_gates", "gate", "tool", "unit", "filament", "action", "has_bypass", "is_in_print",
               "gate_status", "gate_material", "gate_color", "gate_filament_name", "gate_temperature", "gate_remaining"]
 FEATURES = ("quad_gantry_level", "z_tilt", "bed_mesh", "exclude_object", "firmware_retraction", "probe", "bltouch",
             "safe_z_home", "screws_tilt_adjust")
+
+
+HELPER_MACROS = {"load": ("LOAD_FILAMENT", "FILAMENT_LOAD", "M701"), "unload": ("UNLOAD_FILAMENT", "FILAMENT_UNLOAD", "M702"),
+                 "clean": ("CLEAN_NOZZLE", "NOZZLE_CLEAN", "WIPE_NOZZLE", "NOZZLE_WIPE", "G12"),
+                 "park": ("PARK_TOOLHEAD", "TOOLHEAD_PARK", "G27")}
 
 
 _PARAM_RE = re.compile(r"""params\s*(?:\.\s*([A-Za-z_]\w*)|\[\s*['"]([A-Za-z_]\w*)['"]\s*\])(?:\s*\|\s*default\s*\(\s*([^,)]*))?""")
@@ -278,7 +283,7 @@ class MoonrakerClient:
         except (RPCError, asyncio.TimeoutError):
             names = []
         self.extras = [n for n in names
-                       if n.startswith(SENSOR_PREFIXES + FAN_PREFIXES) or n == "fan" or n in EXTRA_HEATERS]
+                       if n.startswith(SENSOR_PREFIXES + FAN_PREFIXES) or n == "fan" or EXTRA_HEATER.fullmatch(n)]
         for n in self.extras:
             objects[n] = None
         if "exclude_object" in names:
@@ -299,6 +304,9 @@ class MoonrakerClient:
         for n in self.led_effects:
             objects[n] = ["enabled"]
         self.pause_layer = "gcode_macro SET_PAUSE_AT_LAYER" in names or "gcode_macro SET_PAUSE_NEXT_LAYER" in names
+        self.tool_macros = sorted((n for n in names if re.fullmatch(r"gcode_macro [Tt]\d+", n)), key=lambda n: int(n.split(" ", 1)[1][1:]))
+        for n in self.tool_macros:
+            objects[n] = None
         if "gcode_macro SET_PRINT_STATS_INFO" in names:
             objects["gcode_macro SET_PRINT_STATS_INFO"] = ["pause_next_layer", "pause_at_layer"]
         for n in ("bed_mesh", "firmware_retraction", "quad_gantry_level", "z_tilt"):
@@ -314,6 +322,8 @@ class MoonrakerClient:
         try:
             res = await self._call("printer.objects.query", {"objects": {"configfile": ["settings"]}})
             settings = ((res or {}).get("status", {}).get("configfile", {}) or {}).get("settings", {}) or {}
+            self.config_sections = set(settings)
+            self.z_endstop = (settings.get("stepper_z") or {}).get("position_endstop") is not None
             desc = {k[len("gcode_macro "):]: (v or {}).get("description") for k, v in settings.items()
                     if k.startswith("gcode_macro ")}
             params = {k[len("gcode_macro "):]: _macro_params((v or {}).get("gcode") or "") for k, v in settings.items()
@@ -568,6 +578,8 @@ class MoonrakerClient:
             "mesh": {"profile": s.get("bed_mesh", {}).get("profile_name"),
                      "profiles": sorted((s.get("bed_mesh", {}).get("profiles") or {}).keys())} if "bed_mesh" in s else None,
             "retraction": s.get("firmware_retraction"),
+            "tools": self.tools_view() if live else None,
+            "tool_changes": self.tool_changes_view() if live else None,
             "leveled": {k: s.get(k, {}).get("applied") for k in ("quad_gantry_level", "z_tilt") if k in s},
             "bed_area": self.bed_area(),
             "mmu": self.mmu_view() if live else None,
@@ -616,6 +628,43 @@ class MoonrakerClient:
                 c = (st.get("color_data") or [[0, 0, 0, 0]])[0]
                 out.append({"id": n, "name": _pretty(n), "kind": "led", "color": list(c)})
         return out
+
+    def tool_changes_view(self) -> list[dict] | None:
+        desc = {m["name"]: m["description"] for m in self.macros}
+        out = []
+        for n in getattr(self, "tool_macros", []):
+            name = n.split(" ", 1)[1].upper()
+            v = self.status.get(n, {})
+            color = str(v.get("color") or "").lstrip("#")
+            out.append({"name": name, "description": desc.get(name) or f"Select tool {name[1:]}",
+                        "color": f"#{color}" if re.fullmatch(r"[0-9a-fA-F]{6}", color) else None, "active": bool(v.get("active"))})
+        return out or None
+
+    def tools_view(self) -> dict | None:
+        c = getattr(self, "config_sections", None)
+        if not c:
+            return None
+        names = {m["name"] for m in self.macros}
+        helpers = {k: next((n for n in opts if n in names), None) for k, opts in HELPER_MACROS.items()}
+        probe = bool(c & {"probe", "bltouch", "smart_effector", "cartographer"}) or any(s.startswith("probe_eddy_current ") for s in c)
+        calibrate = [name for name, ok in (
+            ("AXIS_TWIST_COMPENSATION_CALIBRATE", "axis_twist_compensation" in c),
+            ("BEACON_AUTO_CALIBRATE", "beacon" in c),
+            ("BED_SCREWS_ADJUST", "bed_screws" in c),
+            ("BED_TILT_CALIBRATE", "bed_tilt" in c),
+            ("CARTOGRAPHER_SCAN_CALIBRATE", "cartographer" in c),
+            ("CARTOGRAPHER_TOUCH_CALIBRATE", "cartographer" in c),
+            ("CARTOGRAPHER_AXIS_TWIST_COMPENSATION", "cartographer" in c and "axis_twist_compensation" in c),
+            ("DELTA_CALIBRATE", "delta_calibrate" in c),
+            ("MANUAL_PROBE", True),
+            ("PROBE_ACCURACY", probe),
+            ("PROBE_CALIBRATE", probe),
+            ("QUAD_GANTRY_LEVEL", "quad_gantry_level" in c),
+            ("SCREWS_TILT_CALCULATE", "screws_tilt_adjust" in c),
+            ("Z_ENDSTOP_CALIBRATE", getattr(self, "z_endstop", False)),
+            ("Z_TILT_ADJUST", "z_tilt" in c or "z_tilt_ng" in c),
+        ) if ok]
+        return {"helpers": {k: v for k, v in helpers.items() if v}, "calibrate": calibrate}
 
     async def rpc(self, method: str, params: dict | None = None, timeout: float = 15.0):
         return await self._call(method, params, timeout=timeout)

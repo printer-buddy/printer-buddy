@@ -25,7 +25,7 @@ PARTS=(
   "video|PB_VIDEO|Video|snapshots live timelapse"
   "notify|PB_NOTIFY|Notifications|basic advanced"
   "remote|PB_REMOTE|Remote access|off on"
-  "stream|PB_STREAM|Camera streamer|off light basic full"
+  "stream|PB_STREAM|Camera streamer|off light basic advanced"
   "channel|PB_CHANNEL|Release channel|stable nightly"
   "bambu|PB_BAMBU|Bambu printers|off on"
 )
@@ -43,9 +43,9 @@ declare -A DESC=(
   [remote.off]="only on your home network"
   [remote.on]="reach it from anywhere, with a login"
   [stream.off]="use the printer's own camera service"
-  [stream.light]="1 camera, MJPEG (ustreamer)"
-  [stream.basic]="every USB / Pi camera, MJPEG (ustreamer)"
-  [stream.full]="+ network cameras, WebRTC (go2rtc); needs more CPU"
+  [stream.light]="USB cameras, MJPEG (mjpg-streamer)"
+  [stream.basic]="USB cameras, MJPEG (ustreamer)"
+  [stream.advanced]="+ Pi and network cameras, WebRTC (go2rtc); needs more CPU"
   [channel.stable]="tested releases (v1.x)"
   [channel.nightly]="newest builds, may have bugs"
   [bambu.off]="no Bambu Lab printers"
@@ -193,7 +193,7 @@ branch() { git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknow
 # the branch updates follow: the channel's, unless another branch was picked
 core_branch() {
   case "$(branch)" in
-    nightly|builds|main|HEAD|unknown) [ "$(get_env PB_CHANNEL)" = nightly ] && echo nightly || echo builds ;;
+    nightly|builds|main|HEAD|unknown) [ "$(get_env PB_CHANNEL)" = nightly ] && echo nightly || echo main ;;
     *) branch ;;
   esac
 }
@@ -278,7 +278,7 @@ do_install() {
   ensure_env
   local b; b="$(core_branch)"
   if [ "$(branch)" != "$b" ] && git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
-    echo "Switching to the $b branch for the ${b/builds/stable} channel..."
+    echo "Switching to the $b branch for the ${b/main/stable} channel..."
     git -C "$DIR" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
     git -C "$DIR" fetch -q origin && git -C "$DIR" checkout -q -B "$b" "origin/$b" && git -C "$DIR" branch -q -u "origin/$b" \
       || echo "Couldn't switch to $b, staying on $(branch)."
@@ -470,20 +470,19 @@ main_menu() {
     if [ "$st" = "running" ]; then row "Service:  ● running   $(url)"; else row "Service:  ○ $st"; fi
     row "Version:  $(version) on $(branch)${UPDATE_INFO:+ ($UPDATE_INFO)}"
     hr; setup_lines; hr
-    if installed; then row "$(printf '%-28s%s' '1) Reinstall' '')"; else row "$(printf '%-28s%s' '1) Install' '')"; fi
-    row "$(printf '%-28s%s' '2) Change setup' '6) Show logs')"
-    row "$(printf '%-28s%s' '3) Update' '7) Uninstall')"
-    row "$(printf '%-28s%s' '4) Backup / restore data' '')"
-    row "$(printf '%-28s%s' 'P) Change port' '')"
-    row ""; row "Q) Quit"; bottom
+    if installed; then row "$(printf '%-28s%s' '1) Reinstall' '4) Backup / restore data')"; else row "$(printf '%-28s%s' '1) Install' '4) Backup / restore data')"; fi
+    row "$(printf '%-28s%s' '2) Change setup' '5) Show logs')"
+    row "$(printf '%-28s%s' '3) Update' '6) Uninstall')"
+    row "$(printf '%-28s%s' 'P) Change port' 'Q) Quit')"
+    bottom
     c="$(ask "Perform action: ")"
     case "$c" in
       1) do_install; pause ;;
       2) setup_menu ;;
       3) do_update; pause ;;
       4) backup_menu ;;
-      6) show_logs; pause ;;
-      7) do_remove; pause ;;
+      5) show_logs; pause ;;
+      6) do_remove; pause ;;
       p|port) change_port; pause ;;
       q|quit|exit) echo "Bye."; exit 0 ;;
       *) ;;
@@ -536,37 +535,41 @@ setup_menu() {
 }
 
 stream_setup() {
-  local cur w t tier; cur="$(part_value "${PARTS[5]}")"
-  echo; echo "Camera streamer: where is the camera plugged in?"
-  echo "  1) No camera, or use the printer's own camera service"
-  echo "  2) This box"
-  echo "  3) The printer"
-  w="$(ask "  Choice (Enter to keep $cur): ")"
-  case "$w" in
-    1) [ "$cur" != off ] && { set_env PB_STREAM off; return 0; }; return 1 ;;
-    2|3) ;;
+  local cur c level w
+  cur="$(part_value "${PARTS[5]}")"
+  echo; echo "Camera streamer:"
+  echo "  1) off        ${DESC[stream.off]}"
+  echo "  2) light      ${DESC[stream.light]}"
+  echo "  3) basic      ${DESC[stream.basic]}"
+  echo "  4) advanced   ${DESC[stream.advanced]}"
+  c="$(ask "  Choice (Enter to keep $cur): ")"
+  case "$c" in
+    1) level=off ;; 2) level=light ;; 3) level=basic ;; 4) level=advanced ;;
     *) return 1 ;;
   esac
-  echo; echo "What camera?"
-  echo "  1) USB camera(s)"
-  echo "  2) Pi camera (ribbon cable)"
-  echo "  3) Network camera (rtsp:// or http://)"
-  case "$(ask "  Choice: ")" in 1) t=usb ;; 2) t=pi ;; 3) t=network ;; *) return 1 ;; esac
-  if [ "$w" = 3 ]; then printer_streamer "$t"; pause; return 1; fi
-  tier=basic; [ "$t" = network ] && tier=full
-  [ "$tier" != "$cur" ] || return 1
-  set_env PB_STREAM "$tier"
-  [ "$t" = network ] && echo "Add the camera's address as device: in data/streamer.conf after the install." && pause
+  if [ "$level" = off ]; then [ "$cur" != off ] && { set_env PB_STREAM off; return 0; }; return 1; fi
+  echo; echo "Where is the camera plugged in?"
+  echo "  1) This box"
+  echo "  2) The printer"
+  w="$(ask "  Choice: ")"
+  case "$w" in
+    1) ;;
+    2) printer_streamer "$level"; pause; return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "$level" != "$cur" ] || return 1
+  set_env PB_STREAM "$level"
+  [ "$level" = advanced ] && echo "Network cameras: add each address as device: in data/streamer.conf after the install." && pause
   return 0
 }
 
 printer_streamer() {
-  local t="$1" url="" cmd host user
-  if [ "$t" = network ]; then
-    read -r -p "  Camera address (rtsp://... or http://...): " url </dev/tty || true
-    [ -n "$url" ] || { echo "Nothing changed."; return 1; }
+  local level="$1" addrs="" a cmd host user
+  if [ "$level" = advanced ]; then
+    echo "  Network camera addresses (rtsp://... or http://...), one per line, Enter when done:"
+    while read -r -p "    > " a </dev/tty && [ -n "$a" ]; do addrs+=" '$a'"; done
   fi
-  cmd="curl -fsSL $PRINTER_STREAMER | bash -s -- $t${url:+ '$url'}"
+  cmd="curl -fsSL $PRINTER_STREAMER | bash -s -- $level$addrs"
   echo; echo "How do you want to install it on the printer?"
   echo "  1) Copy and paste a command into the printer's SSH"
   echo "  2) Guided SSH install from here"
@@ -727,7 +730,7 @@ declare -A GIVEN=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) shift ;;
-    -h|--help) echo "Usage: ./install.sh [-y] [--port N] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on] [--stream off|light|basic|full] [--channel stable|nightly] [--parts] [--streamer]"; exit 0 ;;
+    -h|--help) echo "Usage: ./install.sh [-y] [--port N] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on] [--stream off|light|basic|advanced] [--channel stable|nightly] [--parts] [--streamer]"; exit 0 ;;
     --parts) ensure_env; fetch_parts; exit $? ;;
     --streamer) ensure_env; ensure_streamer; exit $? ;;
     --port)

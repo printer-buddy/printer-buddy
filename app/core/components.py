@@ -23,7 +23,7 @@ PARTS = {
     "ui": ("PB_UI", ("advanced",), ROOT / "ui"),
     "notify": ("PB_NOTIFY", ("basic", "advanced"), ROOT / "app" / "core" / "notify.py"),
     "timelapse": (None, (), ROOT / "app" / "media" / "timelapse.py"),
-    "streamer": ("PB_STREAM", ("off", "light", "basic", "full"), ROOT / "streamer"),
+    "streamer": ("PB_STREAM", ("off", "light", "basic", "advanced"), ROOT / "streamer"),
 }
 REQUIRED = ("ui", "notify", "timelapse")
 AI_KINDS = ("off", "basic", "heavy")
@@ -98,7 +98,7 @@ def core() -> dict:
     cur, want = _git("rev-parse", "--abbrev-ref", "HEAD"), updater.core_branch()
     remote = _cached(f"core:{want}", 600, lambda: (_git("ls-remote", "origin", f"refs/heads/{want}").split() or [""])[0][:7])
     have = _git("rev-parse", "--short=7", "HEAD")
-    ver = latest().get(("core", "stable")) if want == "builds" else None
+    ver = latest().get(("core", "stable")) if want == "main" else None
     return {"installed": f"{cur} {have}", "latest": f"{want} {ver or remote}" if remote else None, "version": ver,
             "update": bool(remote) and (cur != want or remote != have)}
 

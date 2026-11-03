@@ -1,7 +1,7 @@
 # Printer Buddy (Lite, remote mode)
 
-A self-hosted printer monitor that runs on a separate box on your LAN (a Pi, NAS or home server).
-**Nothing is installed on the printers.** It finds Moonraker printers on the network, you choose
+A self-hosted printer monitor for Klipper printers. Run it on a Pi, a NAS, a home server or on a printer itself,
+and pick which parts to install and how heavy each one is. It finds Moonraker printers on the network, you choose
 which ones to monitor, and it subscribes to only those over Moonraker's WebSocket API.
 
 ## Install (Pi / any Debian box on the same network as your printers)
@@ -44,7 +44,7 @@ dataset credits. Models: [releases tagged `ai-`](https://github.com/sterling5241
    It reconnects with backoff and re-subscribes on `notify_klippy_ready`.
 4. The dashboard updates live via Server-Sent Events. Webcam snapshots come from `server.webcams.list`
    and are proxied through the box.
-5. Print started, paused, resumed, finished, failed and cancelled events go to ntfy and/or Discord.
+5. Print started, paused, resumed, finished, failed and cancelled events go to ntfy and Discord, and with advanced notifications also to Telegram, Pushover and email.
 
 ## Config (env vars)
 
@@ -59,7 +59,7 @@ dataset credits. Models: [releases tagged `ai-`](https://github.com/sterling5241
 
 ## Moonraker side
 
-Nothing is installed on the printer. If Moonraker restricts access, either add this box's IP to
+Nothing needs adding to Moonraker to monitor a printer. If Moonraker restricts access, either add this box's IP to
 `[authorization] trusted_clients` in `moonraker.conf` or paste an API key when adding the printer.
 For mDNS discovery, enable `[zeroconf]` in `moonraker.conf`; the subnet sweep works either way.
 
@@ -71,10 +71,9 @@ app/core/                SQLite store, stdlib async HTTP + WebSocket client, ntf
 app/printers/            Moonraker client, printer manager (events, fan-out), mDNS + subnet discovery
 app/ai/                  failure detection, photo collection, model downloads
 app/media/               timelapse recording
-ui/                      web UI (served at /static/): core/ builder, panels/ one folder per panel
+ui/                      web UI (downloaded by the installer, served at /static/): core/ builder, panels/ one folder per panel
 docs/                    AI.md
 docker/                  Dockerfile + docker-compose.yml
-relay/                   Cloudflare worker (share links + news)
 ```
 Each folder has a README.txt saying what's in it.
 

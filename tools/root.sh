@@ -12,9 +12,18 @@ case "${1:-}" in
     esac ;;
   deps)
     case "${2:-}" in
-      light|basic) apt-get install -y -q ustreamer v4l-utils ;;
-      full)
-        apt-get install -y -q ffmpeg v4l-utils
+      light)
+        apt-get install -y -q v4l-utils
+        case "$(uname -m)" in
+          x86_64|amd64) a=amd64 ;; aarch64|arm64) a=arm64 ;; armv7l|armv6l) a=armhf ;;
+          *) echo "no mjpg-streamer build for $(uname -m)"; exit 1 ;;
+        esac
+        mkdir -p /usr/local/lib/print-buddy-streamer/mjpg-streamer
+        curl -fsSL "https://github.com/sterling5241/print-buddy-streamer/releases/download/mjpg-streamer/mjpg-streamer-$a.tar.gz" \
+          | tar -xz -C /usr/local/lib/print-buddy-streamer/mjpg-streamer --strip-components=1 ;;
+      basic) apt-get install -y -q ustreamer v4l-utils ;;
+      advanced)
+        apt-get install -y -q ustreamer ffmpeg v4l-utils
         if ! command -v go2rtc >/dev/null; then
           case "$(uname -m)" in
             x86_64|amd64) a=amd64 ;; aarch64|arm64) a=arm64 ;; armv7l) a=arm ;; armv6l) a=armv6 ;;
@@ -52,5 +61,5 @@ UNIT
   disable) systemctl disable -q --now "$STREAMER" 2>/dev/null || true ;;
   reboot) systemctl reboot ;;
   shutdown) systemctl poweroff ;;
-  *) echo "usage: $0 pkg <package> | deps light|basic|full | unit <printer-buddy dir> <user> | enable | restart | disable | reboot | shutdown"; exit 2 ;;
+  *) echo "usage: $0 pkg <package> | deps light|basic|advanced | unit <printer-buddy dir> <user> | enable | restart | disable | reboot | shutdown"; exit 2 ;;
 esac

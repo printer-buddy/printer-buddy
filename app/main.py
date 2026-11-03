@@ -25,6 +25,7 @@ from .printers.manager import Manager
 from .core.net import get_json, http_get, http_stream
 from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .core.store import Store
+from .core.bambu import BambuBridge
 from .core import components as comp
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
@@ -57,6 +58,7 @@ manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "dat
                 manager.snapshot, manager.cam_transform, manager.ai_mode, manager.ai_alert, manager.ai_update)
 manager.collect = Collector(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                             lambda: share_user_id(), lambda: manager.ai.model is not None)
+bambu = BambuBridge(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))))
 scan_lock = asyncio.Lock()
 
 
@@ -1299,7 +1301,9 @@ async def lifespan(app):
     await asyncio.to_thread(manager.ai.load)
     await manager.start()
     manager.collect.start()
+    bambu.start()
     yield
+    await bambu.stop()
     await manager.collect.stop()
     await manager.ai.stop()
     await manager.stop()

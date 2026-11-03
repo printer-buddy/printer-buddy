@@ -13,6 +13,7 @@ BACKUP_DIR="$DIR/backups"
 ASVC="$(getent passwd "$RUN_USER" | cut -d: -f6)/printer_data/moonraker.asvc"
 HELPER=/usr/local/lib/printer-buddy/root.sh
 UPDATER="$DIR/app/core/updater.py"
+BAMBU_CONF="$DIR/data/bambu.json"
 PRINTER_STREAMER=https://raw.githubusercontent.com/sterling5241/print-buddy-streamer/main/install-printer.sh
 PORT_GIVEN=""
 INTERACTIVE=0
@@ -26,6 +27,7 @@ PARTS=(
   "remote|PB_REMOTE|Remote access|off on"
   "stream|PB_STREAM|Camera streamer|off light basic advanced"
   "channel|PB_CHANNEL|Release channel|stable nightly"
+  "bambu|PB_BAMBU|Bambu printers|off on"
 )
 declare -A DESC=(
   [ui.basic]="dashboard, Quick View, printer status page"
@@ -46,8 +48,10 @@ declare -A DESC=(
   [stream.advanced]="+ Pi and network cameras, WebRTC (go2rtc); needs more CPU"
   [channel.stable]="tested releases (v1.x)"
   [channel.nightly]="newest builds, may have bugs"
+  [bambu.off]="no Bambu Lab printers"
+  [bambu.on]="Bambu Lab printers show up as Klipper printers"
 )
-BUILT=" ui.advanced ai.off ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.advanced channel.stable channel.nightly "
+BUILT=" ui.advanced ai.off ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.full channel.stable channel.nightly bambu.off bambu.on "
 
 W=55
 hr()    { printf '|%s|\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '-')"; }
@@ -295,6 +299,7 @@ do_install() {
   moonraker_service add
   install_helper && ensure_streamer
   hard_restart || return 1
+  bambu_register
   echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
 }
 
@@ -500,7 +505,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && ensure_streamer; hard_restart && echo "Restarted with the new setup." && bambu_register; sleep 1; fi
         sync_tunnel
         return ;;
     esac
@@ -508,6 +513,7 @@ setup_menu() {
     part="${PARTS[$((c - 1))]}"
     IFS='|' read -r key var name choices <<<"$part"
     if [ "$key" = stream ]; then stream_setup && changed=1; continue; fi
+    if [ "$key" = bambu ]; then bambu_setup && changed=1; continue; fi
     local opts; read -r -a opts <<<"$choices"
     local cur; cur="$(part_value "$part")"
     echo; echo "$name:"
@@ -579,6 +585,126 @@ printer_streamer() {
       ssh -t "$user@$host" "$cmd" || echo "The install on the printer didn't finish, see above." ;;
     *) echo "Nothing changed." ;;
   esac
+}
+
+bambu_list() {
+  python3 - "$BAMBU_CONF" <<'PY'
+import json, sys
+try:
+    ps = json.load(open(sys.argv[1])).get("printers", [])
+except Exception:
+    ps = []
+for p in ps:
+    print(f"{p.get('name')}|{p.get('host')}|{p.get('serial')}|{p.get('port')}")
+PY
+}
+
+bambu_edit() {   # add <name> <host> <serial> <access code> <port> | remove <port>
+  mkdir -p "$DIR/data"
+  python3 - "$BAMBU_CONF" "$@" <<'PY'
+import json, sys
+path, action, *a = sys.argv[1:]
+try:
+    cfg = json.load(open(path))
+except Exception:
+    cfg = {}
+ps = cfg.setdefault("printers", [])
+if action == "add":
+    ps.append({"name": a[0], "host": a[1], "serial": a[2], "access_code": a[3], "port": int(a[4]), "camera": "auto"})
+else:
+    ps[:] = [p for p in ps if str(p.get("port")) != a[0]]
+json.dump(cfg, open(path, "w"), indent=2)
+PY
+}
+
+bambu_port() {
+  local p=7130 used; used="$(bambu_list | cut -d'|' -f4)"
+  while grep -qx "$p" <<<"$used" || [ "$p" = "$(current_port)" ] || port_owner "$p" >/dev/null; do p=$((p + 1)); done
+  echo "$p"
+}
+
+bambu_pb_id() {   # Printer Buddy's id for the bridged printer on this port
+  curl -fsS --max-time 3 "http://127.0.0.1:$(current_port)/api/printers" 2>/dev/null | python3 -c 'import json, sys
+port, ips = int(sys.argv[1]), sys.argv[2:] + ["127.0.0.1", "localhost"]
+for p in json.load(sys.stdin).get("printers", []):
+    if p.get("port") == port and p.get("host") in ips:
+        print(p["id"])
+        break' "$1" $(hostname -I 2>/dev/null) 2>/dev/null
+}
+
+bambu_register() {
+  local ip name host serial port i body
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  while IFS='|' read -r name host serial port; do
+    [ -z "$(bambu_pb_id "$port")" ] || continue
+    body="$(python3 -c 'import json, sys; print(json.dumps({"name": sys.argv[1], "host": sys.argv[2], "port": int(sys.argv[3])}))' "$name" "${ip:-127.0.0.1}" "$port")"
+    for i in 1 2 3 4 5; do
+      if curl -fsS --max-time 10 -X POST -H 'content-type: application/json' -d "$body" "http://127.0.0.1:$(current_port)/api/printers" >/dev/null 2>&1; then
+        echo "Added $name to Printer Buddy."; break
+      fi
+      sleep 2
+    done
+  done < <(bambu_list)
+}
+
+bambu_add() {
+  local name host serial code port
+  echo; echo "On the printer: Settings > Network shows LAN mode and the access code, Settings > Device the serial number."
+  read -r -p "  Printer IP address: " host </dev/tty || true
+  [ -n "$host" ] || { echo "  Nothing added."; return 1; }
+  read -r -p "  Serial number: " serial </dev/tty || true
+  serial="$(tr -d '[:space:]' <<<"${serial^^}")"
+  [[ "$serial" =~ ^[A-Z0-9]{8,}$ ]] || { echo "  That doesn't look like a serial number. Nothing added."; return 1; }
+  read -r -p "  Access code: " code </dev/tty || true
+  code="$(tr -d '[:space:]' <<<"$code")"
+  [ -n "$code" ] || { echo "  Nothing added."; return 1; }
+  read -r -p "  Name [Bambu $host]: " name </dev/tty || true
+  name="${name:-Bambu $host}"
+  port="$(bambu_port)"
+  bambu_edit add "$name" "$host" "$serial" "$code" "$port" || { echo "  Couldn't save it."; return 1; }
+  case "${serial:0:3}" in
+    00M|00W|03W|094)
+      command -v ffmpeg >/dev/null || { echo "Installing ffmpeg (needed for this printer's camera)..."
+        sudo apt-get update -q && sudo apt-get install -y -q ffmpeg || echo "Couldn't install ffmpeg; the camera won't work."; } ;;
+  esac
+  echo "  Added $name on port $port (Fluidd / Mainsail: $(hostname -I 2>/dev/null | awk '{print $1}'):$port)."
+}
+
+bambu_remove() {
+  local rows c port pid
+  mapfile -t rows < <(bambu_list)
+  c="$(ask "  Remove which? (number, Enter to cancel) ")"
+  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#rows[@]} ] || { echo "  Cancelled."; return 1; }
+  port="$(cut -d'|' -f4 <<<"${rows[$((c - 1))]}")"
+  pid="$(bambu_pb_id "$port")"
+  bambu_edit remove "$port"
+  if [ -n "$pid" ] && curl -fsS --max-time 10 -X DELETE "http://127.0.0.1:$(current_port)/api/printers/$pid" >/dev/null 2>&1; then
+    echo "  Removed (also from Printer Buddy)."
+  else
+    echo "  Removed."
+  fi
+}
+
+bambu_setup() {
+  local changed=1 n name host serial port
+  while true; do
+    echo; echo "Bambu Lab printers (shown in Printer Buddy, Fluidd and Mainsail as Klipper printers)."
+    echo "The printer needs LAN mode; pause / stop / start also need LAN only + Developer mode."
+    n=0
+    while IFS='|' read -r name host serial port; do
+      n=$((n + 1)); echo "  $n) $name   $host   port $port"
+    done < <(bambu_list)
+    echo; echo "  A) Add a printer"
+    [ $n -gt 0 ] && echo "  R) Remove a printer"
+    echo "  B) Back"
+    case "$(ask "  Choice: ")" in
+      a) bambu_add && changed=0 ;;
+      r) [ $n -gt 0 ] && bambu_remove && changed=0 ;;
+      *) break ;;
+    esac
+  done
+  if [ -n "$(bambu_list)" ]; then set_env PB_BAMBU on; else set_env PB_BAMBU off; fi
+  return $changed
 }
 
 backup_menu() {

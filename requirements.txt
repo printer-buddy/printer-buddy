@@ -1,3 +1,5 @@
 starlette>=0.37
 uvicorn>=0.29
 zeroconf>=0.132   # optional: mDNS discovery (subnet sweep still works without it)
+websockets>=12           # bambu-convert: Moonraker websocket
+python-multipart>=0.0.9  # bambu-convert: file uploads

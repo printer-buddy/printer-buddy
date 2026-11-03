@@ -34,6 +34,8 @@ FAN_PREFIXES = ("heater_fan ", "controller_fan ", "fan_generic ")
 EXTRA_HEATER = re.compile(r"extruder\d+")
 OUTPUT_PREFIXES = ("output_pin ", "led ", "neopixel ", "dotstar ", "pca9533 ", "pca9632 ")
 FSENSOR_PREFIXES = ("filament_switch_sensor ", "filament_motion_sensor ")
+MMU_FIELDS = ["enabled", "num_gates", "gate", "tool", "unit", "filament", "action", "has_bypass", "is_in_print",
+              "gate_status", "gate_material", "gate_color", "gate_filament_name", "gate_temperature", "gate_remaining"]
 FEATURES = ("quad_gantry_level", "z_tilt", "bed_mesh", "exclude_object", "firmware_retraction", "probe", "bltouch",
             "safe_z_home", "screws_tilt_adjust")
 
@@ -292,6 +294,9 @@ class MoonrakerClient:
         self.extruders = sorted(n for n in names if n == "extruder" or (n.startswith("extruder") and n[8:].isdigit()))
         for n in self.outputs + self.fsensors:
             objects[n] = None
+        if "mmu" in names:
+            objects["mmu"] = MMU_FIELDS
+            objects["mmu_machine"] = None
         for n in ("manual_probe", "bed_screws", "screws_tilt_adjust"):
             if n in names:
                 objects[n] = None
@@ -577,7 +582,40 @@ class MoonrakerClient:
             "tool_changes": self.tool_changes_view() if live else None,
             "leveled": {k: s.get(k, {}).get("applied") for k in ("quad_gantry_level", "z_tilt") if k in s},
             "bed_area": self.bed_area(),
+            "mmu": self.mmu_view() if live else None,
         }
+
+    def mmu_view(self) -> dict | None:
+        m = self.status.get("mmu")
+        if not m:
+            return None
+        mm = self.status.get("mmu_machine") or {}
+
+        def at(key, i):
+            v = m.get(key) or []
+            return v[i] if i < len(v) else None
+
+        def color(c):
+            c = str(c or "").strip().lstrip("#")
+            if re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", c):
+                return "#" + c[:6].lower()
+            return c or None
+
+        count = len(m.get("gate_status") or []) or int(m.get("num_gates") or 0)
+        gates = [{"status": at("gate_status", i), "material": at("gate_material", i) or "", "color": color(at("gate_color", i)),
+                  "name": at("gate_filament_name", i) or "", "temp": at("gate_temperature", i),
+                  "remaining": r if isinstance(r := at("gate_remaining", i), (int, float)) and r >= 0 else None}
+                 for i in range(count)]
+        units = []
+        for u in range(int(mm.get("num_units") or 1)):
+            info = mm.get(f"unit_{u}") or {}
+            env = self.status.get(info.get("environment_sensor") or "", {})
+            units.append({"name": info.get("name") or f"Unit {u + 1}", "first": int(info.get("first_gate") or 0),
+                          "count": int(info.get("num_gates") or count), "temp": env.get("temperature"),
+                          "humidity": env.get("humidity")})
+        return {"enabled": m.get("enabled", True), "gate": m.get("gate"), "tool": m.get("tool"),
+                "loaded": m.get("filament") == "Loaded", "action": m.get("action"), "bypass": bool(m.get("has_bypass")),
+                "units": units, "gates": gates}
 
     def output_view(self) -> list[dict]:
         out = []

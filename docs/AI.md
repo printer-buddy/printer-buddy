@@ -23,8 +23,8 @@ It only acts when a problem **holds for several checks in a row**, so one odd fr
 
 Models are published as releases on this repo, tagged `ai-<model>`:
 
-- **All AI models:** [Releases tagged `ai-`](https://github.com/sterling5241/printer-buddy/releases?q=ai-&expanded=true)
-- **Current:** [`ai-basic-v1`](https://github.com/sterling5241/printer-buddy/releases/tag/ai-basic-v1)
+- **All AI models:** [Releases tagged `ai-`](https://github.com/printer-buddy/printer-buddy/releases?q=ai-&expanded=true)
+- **Current:** [`ai-basic-v1`](https://github.com/printer-buddy/printer-buddy/releases/tag/ai-basic-v1)
 
 Each release has two files:
 

@@ -7,7 +7,7 @@ which ones to monitor, and it subscribes to only those over Moonraker's WebSocke
 ## Install (Pi / any Debian box on the same network as your printers)
 
 ```bash
-git clone https://github.com/sterling5241/printer-buddy.git
+git clone https://github.com/printer-buddy/printer-buddy.git
 cd printer-buddy
 ./install.sh            # makes a venv, installs deps, sets up the printer-buddy systemd service
 ```
@@ -31,7 +31,7 @@ Docker is still supported if you want it: `docker compose -f docker/docker-compo
 
 Printer Buddy's own model scores camera snapshots for spaghetti, warping, first-layer problems,
 stringing, blobs and cracks. See **[docs/AI.md](docs/AI.md)** for how it works, test results, limits and
-dataset credits. Models: [releases tagged `ai-`](https://github.com/sterling5241/printer-buddy/releases?q=ai-&expanded=true).
+dataset credits. Models: [releases tagged `ai-`](https://github.com/printer-buddy/printer-buddy/releases?q=ai-&expanded=true).
 
 ## How it works
 

@@ -19,7 +19,7 @@ case "${1:-}" in
           *) echo "no mjpg-streamer build for $(uname -m)"; exit 1 ;;
         esac
         mkdir -p /usr/local/lib/print-buddy-streamer/mjpg-streamer
-        curl -fsSL "https://github.com/sterling5241/print-buddy-streamer/releases/download/mjpg-streamer/mjpg-streamer-$a.tar.gz" \
+        curl -fsSL "https://github.com/printer-buddy/print-buddy-streamer/releases/download/mjpg-streamer/mjpg-streamer-$a.tar.gz" \
           | tar -xz -C /usr/local/lib/print-buddy-streamer/mjpg-streamer --strip-components=1 ;;
       basic) apt-get install -y -q ustreamer v4l-utils ;;
       advanced)

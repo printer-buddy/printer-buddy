@@ -13,7 +13,7 @@ BACKUP_DIR="$DIR/backups"
 ASVC="$(getent passwd "$RUN_USER" | cut -d: -f6)/printer_data/moonraker.asvc"
 HELPER=/usr/local/lib/printer-buddy/root.sh
 UPDATER="$DIR/app/core/updater.py"
-PRINTER_STREAMER=https://raw.githubusercontent.com/sterling5241/print-buddy-streamer/main/install-printer.sh
+PRINTER_STREAMER=https://raw.githubusercontent.com/printer-buddy/print-buddy-streamer/main/install-printer.sh
 PORT_GIVEN=""
 INTERACTIVE=0
 

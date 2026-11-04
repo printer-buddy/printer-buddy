@@ -30,7 +30,7 @@ ENV_FILE = ROOT / "printer-buddy.env"
 STATE = ROOT / "data" / "parts"
 VENV = ROOT / ".venv" / "bin"
 HELPERS = ("/usr/local/lib/printer-buddy/root.sh", "/usr/local/lib/printer-buddy/streamer-root.sh")
-RELEASES = "https://api.github.com/repos/sterling5241/printer-buddy/releases?per_page=100"
+RELEASES = "https://api.github.com/repos/printer-buddy/printer-buddy/releases?per_page=100"
 HDR = {"User-Agent": "printer-buddy", "Accept": "application/vnd.github+json"}
 CHANNEL_BRANCH = {"stable": "main", "nightly": "nightly"}
 # setting -> choices (first one is the default)

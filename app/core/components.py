@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / "printer-buddy.env"
 STATE = ROOT / "data" / "parts"
 UPDATER = ROOT / "app" / "core" / "updater.py"
-UPDATES_URL = "https://github.com/sterling5241/printer-buddy/releases/download/updates/updates.txt"
+UPDATES_URL = "https://github.com/printer-buddy/printer-buddy/releases/download/updates/updates.txt"
 # part -> (env var holding its tier, tiers, file or folder it installs)
 PARTS = {
     "ui": ("PB_UI", ("advanced",), ROOT / "ui"),

@@ -104,6 +104,7 @@ class MoonrakerClient:
         self.macros: list[dict] = []
         self.pwm_pins: set[str] = set()
         self._thumbs: dict[str, tuple[str, bytes] | None] = {}
+        self._qmeta: dict[str, tuple[float, dict]] = {}
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._ws: WebSocket | None = None
@@ -378,9 +379,25 @@ class MoonrakerClient:
         res = await self._call(self.QUEUE[action], params or None, timeout=15) or {}
         if action != "status" and "queued_jobs" not in res:
             res = await self._call(self.QUEUE["status"]) or {}
-        return {"jobs": [{"id": j.get("job_id"), "filename": j.get("filename"), "added": j.get("time_added")}
-                         for j in res.get("queued_jobs") or []],
-                "state": res.get("queue_state")}
+        jobs = [{"id": j.get("job_id"), "filename": j.get("filename"), "added": j.get("time_added")}
+                for j in res.get("queued_jobs") or []]
+        names = sorted({j["filename"] for j in jobs if j["filename"]})
+        metas = dict(zip(names, await asyncio.gather(*(self.queue_meta(n) for n in names))))
+        for j in jobs:
+            j.update(metas.get(j["filename"]) or {"time": None, "filament": None, "weight": None})
+        return {"jobs": jobs, "state": res.get("queue_state")}
+
+    async def queue_meta(self, filename: str) -> dict:
+        hit = self._qmeta.get(filename)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        try:
+            m = await self._call("server.files.metadata", {"filename": filename}) or {}
+        except RPCError:
+            m = {}
+        out = {"time": m.get("estimated_time"), "filament": m.get("filament_total"), "weight": m.get("filament_weight_total")}
+        self._qmeta[filename] = (time.time(), out)
+        return out
 
     async def delete_file(self, path: str):
         return await self._call("server.files.delete_file", {"path": f"gcodes/{path}"})

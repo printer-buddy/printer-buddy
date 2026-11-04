@@ -142,9 +142,29 @@ async def add_printer(request: Request):
     api_key = (b.get("api_key") or "").strip() or None
     if not host:
         return err("host is required")
+    bam = b.get("bambu") if isinstance(b.get("bambu"), dict) else None
+    if bam:
+        serial, code = str(bam.get("serial", "")).strip(), str(bam.get("access_code", "")).strip()
+        if not serial or not code:
+            return err("a Bambu printer needs its serial number and access code")
+        try:
+            port = await bambu.add((b.get("name") or "").strip() or f"Bambu {serial[-4:]}", host, serial, code)
+        except ValueError as e:
+            return err(str(e), 409)
+        real, host = host, "127.0.0.1"
+        info = None
+        for _ in range(20):
+            info = await discovery.probe(host, port, None)
+            if info:
+                break
+            await asyncio.sleep(1)
+        if not info:
+            await bambu.remove(port)
+            return err(f"couldn't reach the Bambu printer at {real}: check the IP, serial number and access code, and that LAN mode is on", 404)
     if store.find(host, port):
         return err("that printer is already added", 409)
-    info = await discovery.probe(host, port, api_key)
+    if not bam:
+        info = await discovery.probe(host, port, api_key)
     if not info:
         return err(f"no Moonraker found at {host}:{port}", 404)
     if info["needs_auth"] and not info["auth_ok"]:
@@ -214,7 +234,10 @@ async def delete_printer(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
+    row = store.get(pid)
     await manager.remove(pid)
+    if row and bambu.port_of(row.get("host", ""), row.get("port")):
+        await bambu.remove(row["port"])
     return Response(status_code=204)
 
 
@@ -1025,6 +1048,7 @@ RPC_ALLOW = {
     "server.spoolman.proxy": 20,
     "machine.peripherals.usb": 20, "machine.peripherals.serial": 20, "machine.peripherals.video": 20, "machine.peripherals.canbus": 30,
     "server.history.get_job": 15, "printer.query_endstops.status": 10, "server.sensors.list": 10, "server.webcams.list": 10, "server.webcams.post_item": 15, "server.webcams.delete_item": 15, "printer.objects.list": 10,
+    "server.database.list": 15, "server.database.post_backup": 120, "server.database.delete_backup": 15, "server.database.restore": 180, "server.database.compact": 180,
     "server.info": 10, "server.announcements.list": 15, "server.announcements.dismiss": 15, "printer.info": 10,
 }
 

@@ -13,7 +13,6 @@ BACKUP_DIR="$DIR/backups"
 ASVC="$(getent passwd "$RUN_USER" | cut -d: -f6)/printer_data/moonraker.asvc"
 HELPER=/usr/local/lib/printer-buddy/root.sh
 UPDATER="$DIR/app/core/updater.py"
-BAMBU_CONF="$DIR/data/bambu.json"
 PRINTER_STREAMER=https://raw.githubusercontent.com/sterling5241/print-buddy-streamer/main/install-printer.sh
 PORT_GIVEN=""
 INTERACTIVE=0
@@ -27,7 +26,6 @@ PARTS=(
   "remote|PB_REMOTE|Remote access|off on"
   "stream|PB_STREAM|Camera streamer|off light basic advanced"
   "channel|PB_CHANNEL|Release channel|stable nightly"
-  "bambu|PB_BAMBU|Bambu printers|off on"
 )
 declare -A DESC=(
   [ui.basic]="dashboard, Quick View, printer status page"
@@ -48,10 +46,8 @@ declare -A DESC=(
   [stream.advanced]="+ Pi and network cameras, WebRTC (go2rtc); needs more CPU"
   [channel.stable]="tested releases (v1.x)"
   [channel.nightly]="newest builds, may have bugs"
-  [bambu.off]="no Bambu Lab printers"
-  [bambu.on]="Bambu Lab printers show up as Klipper printers"
 )
-BUILT=" ui.advanced ai.off ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.full channel.stable channel.nightly bambu.off bambu.on "
+BUILT=" ui.advanced ai.off ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.advanced channel.stable channel.nightly "
 
 W=55
 hr()    { printf '|%s|\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '-')"; }
@@ -299,7 +295,6 @@ do_install() {
   moonraker_service add
   install_helper && ensure_streamer
   hard_restart || return 1
-  bambu_register
   echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
 }
 
@@ -462,6 +457,7 @@ main_menu() {
   INTERACTIVE=1
   ensure_env
   for part in "${PARTS[@]}"; do set_env "$(cut -d'|' -f2 <<<"$part")" "$(part_value "$part")"; done
+  if ! installed && [ "$(get_env PB_GUIDED)" != done ]; then guided_first_run; fi
   echo "Checking for updates..."; check_updates
   while true; do
     clear 2>/dev/null || true
@@ -490,6 +486,51 @@ main_menu() {
   done
 }
 
+part_setup() {   # ask one setup question; succeeds if the answer changed
+  local part="$1" key var name choices opts cur j o mark a
+  IFS='|' read -r key var name choices <<<"$part"
+  if [ "$key" = stream ]; then stream_setup; return; fi
+  read -r -a opts <<<"$choices"
+  cur="$(part_value "$part")"
+  echo; echo "$name:"
+  j=1
+  for o in "${opts[@]}"; do
+    mark=""; [ "$o" = "$cur" ] && mark="  <- current"
+    if built "$key.$o"; then printf "  %d) %-10s %s%s
+" "$j" "$o" "${DESC[$key.$o]}" "$mark"
+    else printf "  \e[2m%d) %-10s %s (coming soon)\e[0m
+" "$j" "$o" "${DESC[$key.$o]}"; fi
+    j=$((j + 1))
+  done
+  a="$(ask "  Choice (Enter to keep ${cur}): ")"
+  if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le ${#opts[@]} ]; then a="${opts[$((a - 1))]}"; fi
+  case " $choices " in
+    *" $a "*)
+      if ! built "$key.$a"; then echo "  $a is coming soon."; sleep 1
+      elif [ "$a" != "$cur" ]; then set_env "$var" "$a"; return 0; fi ;;
+  esac
+  return 1
+}
+
+guided_first_run() {
+  clear 2>/dev/null || true
+  top; center "WELCOME TO PRINTER BUDDY"; hr
+  row "Let's set it up. Enter keeps the suggested answer."
+  row "You can change any of this later in Change setup."
+  bottom
+  local n=${#PARTS[@]} i=0 part
+  for part in "${PARTS[@]}"; do
+    i=$((i + 1)); echo; echo "Step $i of $n"
+    part_setup "$part" || true
+  done
+  set_env PB_GUIDED done
+  echo
+  case "$(ask "Install Printer Buddy now? [Y/n] ")" in
+    n|no) echo "Not installed. Choose 1) Install in the menu when you are ready." ;;
+    *) do_install && sync_tunnel; pause ;;
+  esac
+}
+
 setup_menu() {
   local changed=0 c part key var name choices
   while true; do
@@ -505,49 +546,38 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && ensure_streamer; hard_restart && echo "Restarted with the new setup." && bambu_register; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         sync_tunnel
         return ;;
     esac
     [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#PARTS[@]} ] || continue
     part="${PARTS[$((c - 1))]}"
     IFS='|' read -r key var name choices <<<"$part"
-    if [ "$key" = stream ]; then stream_setup && changed=1; continue; fi
-    if [ "$key" = bambu ]; then bambu_setup && changed=1; continue; fi
-    local opts; read -r -a opts <<<"$choices"
-    local cur; cur="$(part_value "$part")"
-    echo; echo "$name:"
-    local j=1 o mark note
-    for o in "${opts[@]}"; do
-      mark=""; [ "$o" = "$cur" ] && mark="  <- current"
-      if built "$key.$o"; then printf "  %d) %-10s %s%s\n" "$j" "$o" "${DESC[$key.$o]}" "$mark"
-      else printf "  \e[2m%d) %-10s %s (coming soon)\e[0m\n" "$j" "$o" "${DESC[$key.$o]}"; fi
-      j=$((j + 1))
-    done
-    local a; a="$(ask "  Choice (Enter to keep ${cur}): ")"
-    if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le ${#opts[@]} ]; then a="${opts[$((a - 1))]}"; fi
-    case " $choices " in
-      *" $a "*)
-        if ! built "$key.$a"; then echo "  $a is coming soon."; sleep 1
-        elif [ "$a" != "$cur" ]; then set_env "$var" "$a"; changed=1; fi ;;
-    esac
+    part_setup "$part" && changed=1
   done
 }
 
 stream_setup() {
   local cur c level w
   cur="$(part_value "${PARTS[5]}")"
-  echo; echo "Camera streamer:"
-  echo "  1) off        ${DESC[stream.off]}"
-  echo "  2) light      ${DESC[stream.light]}"
-  echo "  3) basic      ${DESC[stream.basic]}"
-  echo "  4) advanced   ${DESC[stream.advanced]}"
-  c="$(ask "  Choice (Enter to keep $cur): ")"
+  echo; echo "Use Printer Buddy's camera streamer? It replaces Crowsnest (or any camera service already on the printer)."
+  echo "  1) No, keep what I have"
+  echo "  2) Yes"
+  c="$(ask "  Choice (Enter to keep $([ "$cur" = off ] && echo no || echo yes)): ")"
   case "$c" in
-    1) level=off ;; 2) level=light ;; 3) level=basic ;; 4) level=advanced ;;
+    1) [ "$cur" != off ] && { set_env PB_STREAM off; return 0; }; return 1 ;;
+    2) ;;
     *) return 1 ;;
   esac
-  if [ "$level" = off ]; then [ "$cur" != off ] && { set_env PB_STREAM off; return 0; }; return 1; fi
+  echo; echo "Camera streamer level:"
+  echo "  1) light      ${DESC[stream.light]}"
+  echo "  2) basic      ${DESC[stream.basic]}"
+  echo "  3) advanced   ${DESC[stream.advanced]}"
+  c="$(ask "  Choice$([ "$cur" != off ] && echo " (Enter to keep $cur)"): ")"
+  case "$c" in
+    1) level=light ;; 2) level=basic ;; 3) level=advanced ;;
+    *) return 1 ;;
+  esac
   echo; echo "Where is the camera plugged in?"
   echo "  1) This box"
   echo "  2) The printer"
@@ -564,12 +594,8 @@ stream_setup() {
 }
 
 printer_streamer() {
-  local level="$1" addrs="" a cmd host user
-  if [ "$level" = advanced ]; then
-    echo "  Network camera addresses (rtsp://... or http://...), one per line, Enter when done:"
-    while read -r -p "    > " a </dev/tty && [ -n "$a" ]; do addrs+=" '$a'"; done
-  fi
-  cmd="curl -fsSL $PRINTER_STREAMER | bash -s -- $level$addrs"
+  local level="$1" cmd host user
+  cmd="curl -fsSL $PRINTER_STREAMER | bash -s -- $level"
   echo; echo "How do you want to install it on the printer?"
   echo "  1) Copy and paste a command into the printer's SSH"
   echo "  2) Guided SSH install from here"
@@ -585,126 +611,6 @@ printer_streamer() {
       ssh -t "$user@$host" "$cmd" || echo "The install on the printer didn't finish, see above." ;;
     *) echo "Nothing changed." ;;
   esac
-}
-
-bambu_list() {
-  python3 - "$BAMBU_CONF" <<'PY'
-import json, sys
-try:
-    ps = json.load(open(sys.argv[1])).get("printers", [])
-except Exception:
-    ps = []
-for p in ps:
-    print(f"{p.get('name')}|{p.get('host')}|{p.get('serial')}|{p.get('port')}")
-PY
-}
-
-bambu_edit() {   # add <name> <host> <serial> <access code> <port> | remove <port>
-  mkdir -p "$DIR/data"
-  python3 - "$BAMBU_CONF" "$@" <<'PY'
-import json, sys
-path, action, *a = sys.argv[1:]
-try:
-    cfg = json.load(open(path))
-except Exception:
-    cfg = {}
-ps = cfg.setdefault("printers", [])
-if action == "add":
-    ps.append({"name": a[0], "host": a[1], "serial": a[2], "access_code": a[3], "port": int(a[4]), "camera": "auto"})
-else:
-    ps[:] = [p for p in ps if str(p.get("port")) != a[0]]
-json.dump(cfg, open(path, "w"), indent=2)
-PY
-}
-
-bambu_port() {
-  local p=7130 used; used="$(bambu_list | cut -d'|' -f4)"
-  while grep -qx "$p" <<<"$used" || [ "$p" = "$(current_port)" ] || port_owner "$p" >/dev/null; do p=$((p + 1)); done
-  echo "$p"
-}
-
-bambu_pb_id() {   # Printer Buddy's id for the bridged printer on this port
-  curl -fsS --max-time 3 "http://127.0.0.1:$(current_port)/api/printers" 2>/dev/null | python3 -c 'import json, sys
-port, ips = int(sys.argv[1]), sys.argv[2:] + ["127.0.0.1", "localhost"]
-for p in json.load(sys.stdin).get("printers", []):
-    if p.get("port") == port and p.get("host") in ips:
-        print(p["id"])
-        break' "$1" $(hostname -I 2>/dev/null) 2>/dev/null
-}
-
-bambu_register() {
-  local ip name host serial port i body
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  while IFS='|' read -r name host serial port; do
-    [ -z "$(bambu_pb_id "$port")" ] || continue
-    body="$(python3 -c 'import json, sys; print(json.dumps({"name": sys.argv[1], "host": sys.argv[2], "port": int(sys.argv[3])}))' "$name" "${ip:-127.0.0.1}" "$port")"
-    for i in 1 2 3 4 5; do
-      if curl -fsS --max-time 10 -X POST -H 'content-type: application/json' -d "$body" "http://127.0.0.1:$(current_port)/api/printers" >/dev/null 2>&1; then
-        echo "Added $name to Printer Buddy."; break
-      fi
-      sleep 2
-    done
-  done < <(bambu_list)
-}
-
-bambu_add() {
-  local name host serial code port
-  echo; echo "On the printer: Settings > Network shows LAN mode and the access code, Settings > Device the serial number."
-  read -r -p "  Printer IP address: " host </dev/tty || true
-  [ -n "$host" ] || { echo "  Nothing added."; return 1; }
-  read -r -p "  Serial number: " serial </dev/tty || true
-  serial="$(tr -d '[:space:]' <<<"${serial^^}")"
-  [[ "$serial" =~ ^[A-Z0-9]{8,}$ ]] || { echo "  That doesn't look like a serial number. Nothing added."; return 1; }
-  read -r -p "  Access code: " code </dev/tty || true
-  code="$(tr -d '[:space:]' <<<"$code")"
-  [ -n "$code" ] || { echo "  Nothing added."; return 1; }
-  read -r -p "  Name [Bambu $host]: " name </dev/tty || true
-  name="${name:-Bambu $host}"
-  port="$(bambu_port)"
-  bambu_edit add "$name" "$host" "$serial" "$code" "$port" || { echo "  Couldn't save it."; return 1; }
-  case "${serial:0:3}" in
-    00M|00W|03W|094)
-      command -v ffmpeg >/dev/null || { echo "Installing ffmpeg (needed for this printer's camera)..."
-        sudo apt-get update -q && sudo apt-get install -y -q ffmpeg || echo "Couldn't install ffmpeg; the camera won't work."; } ;;
-  esac
-  echo "  Added $name on port $port (Fluidd / Mainsail: $(hostname -I 2>/dev/null | awk '{print $1}'):$port)."
-}
-
-bambu_remove() {
-  local rows c port pid
-  mapfile -t rows < <(bambu_list)
-  c="$(ask "  Remove which? (number, Enter to cancel) ")"
-  [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#rows[@]} ] || { echo "  Cancelled."; return 1; }
-  port="$(cut -d'|' -f4 <<<"${rows[$((c - 1))]}")"
-  pid="$(bambu_pb_id "$port")"
-  bambu_edit remove "$port"
-  if [ -n "$pid" ] && curl -fsS --max-time 10 -X DELETE "http://127.0.0.1:$(current_port)/api/printers/$pid" >/dev/null 2>&1; then
-    echo "  Removed (also from Printer Buddy)."
-  else
-    echo "  Removed."
-  fi
-}
-
-bambu_setup() {
-  local changed=1 n name host serial port
-  while true; do
-    echo; echo "Bambu Lab printers (shown in Printer Buddy, Fluidd and Mainsail as Klipper printers)."
-    echo "The printer needs LAN mode; pause / stop / start also need LAN only + Developer mode."
-    n=0
-    while IFS='|' read -r name host serial port; do
-      n=$((n + 1)); echo "  $n) $name   $host   port $port"
-    done < <(bambu_list)
-    echo; echo "  A) Add a printer"
-    [ $n -gt 0 ] && echo "  R) Remove a printer"
-    echo "  B) Back"
-    case "$(ask "  Choice: ")" in
-      a) bambu_add && changed=0 ;;
-      r) [ $n -gt 0 ] && bambu_remove && changed=0 ;;
-      *) break ;;
-    esac
-  done
-  if [ -n "$(bambu_list)" ]; then set_env PB_BAMBU on; else set_env PB_BAMBU off; fi
-  return $changed
 }
 
 backup_menu() {

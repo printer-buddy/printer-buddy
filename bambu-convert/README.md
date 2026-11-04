@@ -2,7 +2,7 @@
 
 Makes Bambu Lab printers look like Klipper / Moonraker printers, so Printer Buddy, Fluidd and Mainsail can use them.
 One port per printer (7130, 7131, ...). Printer Buddy runs it while `data/bambu.json` lists printers; add them with
-`./install.sh` > Change setup > Bambu printers.
+Printer Buddy's **Add a printer by address** form (tick "Bambu Lab printer").
 
 ## Printer side
 

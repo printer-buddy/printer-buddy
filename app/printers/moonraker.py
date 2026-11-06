@@ -564,7 +564,7 @@ class MoonrakerClient:
             "nozzle_target": s.get("extruder", {}).get("target"),
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
-            "has_webcam": self.snapshot_url() is not None,
+            "has_webcam": self.native_camera is not None or self.snapshot_url() is not None,
             "layer": (ps.get("info") or {}).get("current_layer"),
             "total_layers": (ps.get("info") or {}).get("total_layer"),
             "cams": self.cams_info(),

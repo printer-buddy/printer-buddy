@@ -25,6 +25,7 @@ class Camera:
         self.off_reason: str | None = None
         self.guessed = False
         self._fails = 0
+        self.confirmed = False
         self._tls_opt = True
         self.frame: bytes | None = None
         self.frame_at = 0.0
@@ -63,6 +64,8 @@ class Camera:
 
     async def _publish(self, jpeg: bytes):
         self.frame, self.frame_at = jpeg, time.monotonic()
+        self._fails = 0
+        self.confirmed = self.confirmed or bool(self.rtsp_url)
         async with self._new:
             self._new.notify_all()
 
@@ -96,7 +99,7 @@ class Camera:
         if not self.rtsp_url:
             self.rtsp_url, self.guessed = f"rtsps://{self.host}:322/streaming/live/1", True
             log.info("camera %s: no picture on port 6000, trying the printer's video stream", self.host)
-        elif self.guessed:
+        elif self.guessed and not self.confirmed:
             self.rtsp_url, self.guessed = None, False
             log.info("camera %s: the video stream didn't work either, going back to port 6000", self.host)
 

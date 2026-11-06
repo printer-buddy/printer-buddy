@@ -12,6 +12,36 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class _Reply(asyncio.DatagramProtocol):
+    def __init__(self, fut: asyncio.Future):
+        self.fut = fut
+
+    def datagram_received(self, data, addr):
+        if not self.fut.done():
+            self.fut.set_result(data)
+
+
+async def discover_elegoo(host: str, port: int = 3000) -> dict | None:
+    """Ask a Centauri Carbon at this address who it is (UDP "M99999"); its MainboardID is what the bridge needs."""
+    loop = asyncio.get_running_loop()
+    for _ in range(3):
+        fut = loop.create_future()
+        try:
+            transport, _ = await loop.create_datagram_endpoint(lambda: _Reply(fut), remote_addr=(host, port))
+        except OSError:
+            return None
+        try:
+            transport.sendto(b"M99999")
+            data = json.loads(await asyncio.wait_for(fut, 2)).get("Data") or {}
+            if data.get("MainboardID"):
+                return data
+        except (asyncio.TimeoutError, ValueError, AttributeError):
+            pass
+        finally:
+            transport.close()
+    return None
+
+
 class BambuBridge:
     """Runs bambu-convert (Bambu Lab printers as Moonraker) next to the app while data/bambu.json lists printers."""
 
@@ -58,16 +88,19 @@ class BambuBridge:
         self._task = self._proc = None
         self.start()
 
-    async def add(self, name: str, host: str, serial: str, access_code: str) -> int:
+    async def add(self, name: str, host: str, serial: str, access_code: str, brand: str = "bambu", model: str = "") -> int:
         cfg = self._read()
         ps = cfg.setdefault("printers", [])
         if any(p.get("serial") == serial or p.get("host") == host for p in ps):
-            raise ValueError("that Bambu printer is already added")
+            raise ValueError("that printer is already added")
         used = {p.get("port") for p in ps}
         port = 7130
         while port in used or not self._free(port):
             port += 1
-        ps.append({"name": name, "host": host, "serial": serial, "access_code": access_code, "port": port, "camera": "auto"})
+        entry = {"name": name, "host": host, "serial": serial, "access_code": access_code, "port": port, "camera": "auto"}
+        if brand != "bambu":
+            entry.update(brand=brand, model=model)
+        ps.append(entry)
         self._write(cfg)
         await self.reload()
         return port

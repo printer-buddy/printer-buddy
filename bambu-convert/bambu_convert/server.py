@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import inspect
 import io
 import itertools
 import json
@@ -20,6 +21,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from . import elegoo
 from .printer import FANS, Bambu
 
 log = logging.getLogger("bambu.server")
@@ -64,7 +66,7 @@ class Client:
 
 class Bridge:
     def __init__(self, cfg: dict, data_dir: Path):
-        self.p = Bambu(cfg)
+        self.p = elegoo.make(cfg) if cfg.get("brand") == "elegoo" else Bambu(cfg)
         self.port = int(cfg["port"])
         self.dir = data_dir / self.p.serial
         (self.dir / "thumbs").mkdir(parents=True, exist_ok=True)
@@ -197,6 +199,8 @@ class Bridge:
 
     async def _ftp(self, fn, *args):
         try:
+            if inspect.iscoroutinefunction(fn):
+                return await fn(*args)
             return await asyncio.to_thread(fn, *args)
         except Exception as e:
             raise RPCError(500, f"printer storage: {e}") from e
@@ -396,11 +400,11 @@ class Bridge:
 
     def webcams(self, host: str) -> list[dict]:
         base = f"http://{host}"
-        return [{"name": "Bambu camera", "location": "printer", "service": "mjpegstreamer-adaptive", "enabled": True,
+        return [{"name": getattr(self.p, "camera_name", "Bambu camera"), "location": "printer", "service": "mjpegstreamer-adaptive", "enabled": True,
                  "icon": "mdiWebcam", "target_fps": 15, "target_fps_idle": 5,
                  "stream_url": f"{base}/webcam/?action=stream", "snapshot_url": f"{base}/webcam/?action=snapshot",
                  "flip_horizontal": False, "flip_vertical": False, "rotation": 0, "aspect_ratio": "16:9",
-                 "extra_data": {}, "source": "config", "uid": f"bambu-{self.p.serial}"}]
+                 "extra_data": {}, "source": "config", "uid": f"{getattr(self.p, 'brand', 'bambu').lower()}-{self.p.serial}"}]
 
     async def call(self, method: str, params: dict, client: Client):
         p = self.p
@@ -420,8 +424,8 @@ class Bridge:
                     "missing_klippy_requirements": [], "api_version": [1, 5, 0], "api_version_string": "1.5.0"}
         if method == "printer.info":
             return {"state": "ready" if p.connected else "startup",
-                    "state_message": "Printer is ready" if p.connected else f"Bambu printer not reachable: {p.error}",
-                    "hostname": p.name, "software_version": f"Bambu Lab {p.model}", "cpu_info": p.model,
+                    "state_message": "Printer is ready" if p.connected else f"{getattr(p, 'brand', 'Bambu')} printer not reachable: {p.error}",
+                    "hostname": p.name, "software_version": f"{getattr(p, 'brand', 'Bambu Lab')} {p.model}", "cpu_info": p.model,
                     "klipper_path": "", "python_path": "", "log_file": "", "config_file": "", "app": "Klipper"}
         if method == "server.connection.identify":
             return {"connection_id": client.id}
@@ -541,7 +545,7 @@ class Bridge:
             return {"sensors": {}}
         if method == "machine.system_info":
             return {"system_info": {"cpu_info": {"cpu_count": 0, "processor": p.model, "model": p.model},
-                                    "sd_info": {}, "distribution": {"name": f"Bambu Lab {p.model}"},
+                                    "sd_info": {}, "distribution": {"name": f"{getattr(p, 'brand', 'Bambu Lab')} {p.model}"},
                                     "available_services": [], "instance_ids": {"moonraker": "moonraker", "klipper": "klipper"},
                                     "service_state": {}, "virtualization": {}, "python": {}, "network": {},
                                     "canbus": {}}}
@@ -714,6 +718,8 @@ def build(printers: list[dict], data_dir: Path) -> Starlette:
             reply = {"jsonrpc": "2.0", "result": result, "id": rid}
         except RPCError as e:
             reply = {"jsonrpc": "2.0", "error": {"code": e.code, "message": str(e)}, "id": rid}
+        except (ValueError, NotImplementedError) as e:
+            reply = {"jsonrpc": "2.0", "error": {"code": 400, "message": str(e) or "not available on this printer"}, "id": rid}
         except Exception as e:
             log.exception("%s failed", msg.get("method"))
             reply = {"jsonrpc": "2.0", "error": {"code": 500, "message": str(e)}, "id": rid}

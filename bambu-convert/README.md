@@ -1,16 +1,36 @@
 # Bambu Convert
 
-Makes Bambu Lab printers look like Klipper / Moonraker printers, so Printer Buddy, Fluidd and Mainsail can use them.
+Makes Bambu Lab and Elegoo Centauri Carbon printers look like Klipper / Moonraker printers, so Printer Buddy, Fluidd and Mainsail can use them.
 One port per printer (7130, 7131, ...). Printer Buddy runs it while `data/bambu.json` lists printers; add them with
-Printer Buddy's **Add a printer by address** form (tick "Bambu Lab printer").
+Printer Buddy's **Add a printer by address** form (pick the **Printer type**).
 
-## Printer side
+## Elegoo Centauri Carbon
+
+Two models, two protocols, both turned into the same Moonraker objects:
+
+- **Centauri Carbon (CC1)** &mdash; SDCP over a WebSocket (port 3030). Only the IP is needed: the bridge asks the printer who it is (UDP port 3000). The camera is `http://<ip>:3031/video`.
+- **Centauri Carbon 2 (CC2)** &mdash; MQTT (port 1883, user `elegoo`, password = the access code). Needs the serial number and access code.
+
+What works: status (state, file, layers, progress, temperatures, fans, light), pause, resume, stop, start a print, upload, camera. The CC2 also takes temperatures, fans, light, speed, file list and delete.
+
+On a CC1 with the stock firmware, only pause, resume, stop, start and status are sent, because a command the firmware doesn't know can crash its software and stop a print. Temperatures, fans, light, speed and the file list stay off. If the printer runs OpenCentauri firmware, add `"extra_commands": true` to its entry in `bambu.json` to turn them on.
+
+> **Not tested on a real printer.** This was written from community protocol notes and tested against simulated printers only, not a real Centauri Carbon. The CC2 side has the least documentation.
+
+Entries look like this (`brand` and `model` are set by the Add form):
+
+```json
+{"name": "Centauri", "host": "192.168.0.60", "serial": "<MainboardID>", "port": 7131, "brand": "elegoo", "model": "cc1"}
+{"name": "CC2", "host": "192.168.0.61", "serial": "<serial>", "access_code": "<code>", "port": 7132, "brand": "elegoo", "model": "cc2"}
+```
+
+## Bambu: printer side
 
 - LAN mode on, access code from Settings > Network, serial number from Settings > Device.
 - Pause / resume / stop / start / G-code need **LAN only + Developer mode** on current firmware; status works without.
 - X1 / H2 cameras: RTSP (needs `ffmpeg`, and LAN liveview on). P1 / A1 cameras: port 6000.
 
-## What is translated
+## What is translated (Bambu)
 
 | Moonraker | Bambu |
 |---|---|

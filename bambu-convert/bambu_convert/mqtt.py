@@ -28,15 +28,16 @@ def _packet(kind: int, body: bytes) -> bytes:
 class MQTT:
     """Just enough MQTT 3.1.1 (QoS 0) for a Bambu printer's local broker."""
 
-    def __init__(self, host: str, user: str, password: str, client_id: str, port: int = 8883):
+    def __init__(self, host: str, user: str, password: str, client_id: str, port: int = 8883, tls: bool = True):
         self.host, self.port, self.user, self.password, self.client_id = host, port, user, password, client_id
+        self.tls = tls
         self._r: asyncio.StreamReader | None = None
         self._w: asyncio.StreamWriter | None = None
         self._ids = 0
 
     async def connect(self, keepalive: int = 60):
         self._r, self._w = await asyncio.wait_for(
-            asyncio.open_connection(self.host, self.port, ssl=_ctx(), server_hostname=None), 10)
+            asyncio.open_connection(self.host, self.port, ssl=_ctx() if self.tls else None, server_hostname=None), 10)
         body = _str("MQTT") + bytes([4, 0xC2]) + struct.pack("!H", keepalive)
         body += _str(self.client_id) + _str(self.user) + _str(self.password)
         self._w.write(_packet(0x10, body))

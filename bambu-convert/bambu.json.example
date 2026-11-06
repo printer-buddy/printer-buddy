@@ -1,5 +1,6 @@
 {
   "printers": [
-    {"name": "X1C", "host": "192.168.0.50", "serial": "00M00A000000000", "access_code": "12345678", "port": 7130, "camera": "auto"}
+    {"name": "X1C", "host": "192.168.0.50", "serial": "00M00A000000000", "access_code": "12345678", "port": 7130, "camera": "auto"},
+    {"name": "Centauri", "host": "192.168.0.60", "serial": "<MainboardID>", "port": 7131, "brand": "elegoo", "model": "cc1"}
   ]
 }

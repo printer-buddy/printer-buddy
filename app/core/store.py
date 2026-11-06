@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS shares (
     created_at REAL NOT NULL,
     expires_at REAL,
     revoked    INTEGER NOT NULL DEFAULT 0,
-    until_print INTEGER NOT NULL DEFAULT 0
+    until_print INTEGER NOT NULL DEFAULT 0,
+    chat INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -54,6 +55,8 @@ class Store:
                 self.db.execute("ALTER TABLE printers ADD COLUMN aiarea TEXT")
             if "until_print" not in {r["name"] for r in self.db.execute("PRAGMA table_info(shares)")}:
                 self.db.execute("ALTER TABLE shares ADD COLUMN until_print INTEGER NOT NULL DEFAULT 0")
+            if "chat" not in {r["name"] for r in self.db.execute("PRAGMA table_info(shares)")}:
+                self.db.execute("ALTER TABLE shares ADD COLUMN chat INTEGER NOT NULL DEFAULT 1")
 
     def list(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM printers ORDER BY id")]
@@ -93,10 +96,10 @@ class Store:
             self.db.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
                                 [(k, json.dumps(v)) for k, v in values.items()])
 
-    def add_share(self, code: str, pid: int, expires_at: float | None, until_print: bool = False) -> dict:
+    def add_share(self, code: str, pid: int, expires_at: float | None, until_print: bool = False, chat: bool = True) -> dict:
         with self.db:
-            self.db.execute("INSERT INTO shares(code, printer_id, created_at, expires_at, until_print) VALUES (?,?,?,?,?)",
-                            (code, pid, time.time(), expires_at, 1 if until_print else 0))
+            self.db.execute("INSERT INTO shares(code, printer_id, created_at, expires_at, until_print, chat) VALUES (?,?,?,?,?,?)",
+                            (code, pid, time.time(), expires_at, 1 if until_print else 0, 1 if chat else 0))
         return self.get_share(code)
 
     def get_share(self, code: str) -> dict | None:

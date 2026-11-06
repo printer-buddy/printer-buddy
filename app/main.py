@@ -24,8 +24,9 @@ from .printers import discovery
 from .printers.manager import Manager
 from .core.net import get_json, http_get, http_stream
 from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
+from .core.chat import Chat
 from .core.store import Store
-from .core.bambu import BambuBridge
+from .core.bambu import BambuBridge, discover_elegoo as bambu_discover
 from .core import components as comp
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
@@ -143,12 +144,28 @@ async def add_printer(request: Request):
     if not host:
         return err("host is required")
     bam = b.get("bambu") if isinstance(b.get("bambu"), dict) else None
-    if bam:
-        serial, code = str(bam.get("serial", "")).strip(), str(bam.get("access_code", "")).strip()
-        if not serial or not code:
-            return err("a Bambu printer needs its serial number and access code")
+    ele = b.get("elegoo") if isinstance(b.get("elegoo"), dict) else None
+    label, hint = "Bambu printer", "the IP, serial number and access code, and that LAN mode is on"
+    if bam or ele:
+        name = (b.get("name") or "").strip()
         try:
-            port = await bambu.add((b.get("name") or "").strip() or f"Bambu {serial[-4:]}", host, serial, code)
+            if bam:
+                serial, code = str(bam.get("serial", "")).strip(), str(bam.get("access_code", "")).strip()
+                if not serial or not code:
+                    return err("a Bambu printer needs its serial number and access code")
+                port = await bambu.add(name or f"Bambu {serial[-4:]}", host, serial, code)
+            else:
+                model = "cc2" if str(ele.get("model", "")).lower() == "cc2" else "cc1"
+                serial, code = str(ele.get("serial", "")).strip(), str(ele.get("access_code", "")).strip()
+                label, hint = ("Centauri Carbon 2", "the IP, serial number and access code, and that LAN mode is on") if model == "cc2"                     else ("Centauri Carbon", "the IP, and that the printer is on")
+                if model == "cc1":
+                    found = await bambu_discover(host)
+                    if not found:
+                        return err(f"couldn't find a Centauri Carbon at {host}: check the IP, and that the printer is on", 404)
+                    serial, name = found["MainboardID"], name or str(found.get("Name") or "Centauri Carbon")
+                elif not serial or not code:
+                    return err("a Centauri Carbon 2 needs its serial number and access code")
+                port = await bambu.add(name or f"Centauri Carbon 2 {serial[-4:]}", host, serial, code, brand="elegoo", model=model)
         except ValueError as e:
             return err(str(e), 409)
         real, host = host, "127.0.0.1"
@@ -160,10 +177,10 @@ async def add_printer(request: Request):
             await asyncio.sleep(1)
         if not info:
             await bambu.remove(port)
-            return err(f"couldn't reach the Bambu printer at {real}: check the IP, serial number and access code, and that LAN mode is on", 404)
+            return err(f"couldn't reach the {label} at {real}: check {hint}", 404)
     if store.find(host, port):
         return err("that printer is already added", 409)
-    if not bam:
+    if not (bam or ele):
         info = await discovery.probe(host, port, api_key)
     if not info:
         return err(f"no Moonraker found at {host}:{port}", 404)
@@ -816,7 +833,8 @@ def share_url(request: Request, pid: int, code: str) -> str:
 
 def share_view(request: Request, row: dict) -> dict:
     return {"code": row["code"], "url": share_url(request, row["printer_id"], row["code"]),
-            "created_at": row["created_at"], "expires_at": row["expires_at"], "until_print": bool(row.get("until_print"))}
+            "created_at": row["created_at"], "expires_at": row["expires_at"], "until_print": bool(row.get("until_print")),
+            "chat": bool(row.get("chat", 1))}
 
 
 async def share_user(request: Request):
@@ -829,7 +847,8 @@ async def create_share(request: Request):
         return err("not found", 404)
     if not remote_on():
         return err("share links need Remote access on (installer: Change setup)", 403)
-    expiry = (await body(request)).get("expires", "1d")
+    b = await body(request)
+    expiry = b.get("expires", "1d")
     if expiry not in SHARE_EXPIRY:
         return err("bad expiry")
     until = expiry == "print"
@@ -837,7 +856,7 @@ async def create_share(request: Request):
     if until and (client.status.get("print_stats", {}).get("state") if client else None) not in ("printing", "paused"):
         return err("no print is running on this printer", 409)
     seconds = SHARE_EXPIRY[expiry]
-    row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None, until)
+    row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None, until, b.get("chat") is not False)
     return JSONResponse(share_view(request, row), status_code=201)
 
 
@@ -869,6 +888,61 @@ def _valid_share(request: Request):
 
 
 SHARE_GONE = "This share link has expired or was turned off."
+chat = Chat()
+
+
+def chat_enabled(pid: int) -> bool:
+    return pid not in (store.settings().get("chat_off") or [])
+
+
+def _after(request: Request) -> int:
+    try:
+        return max(0, int(request.query_params.get("after", 0)))
+    except ValueError:
+        return 0
+
+
+async def share_chat(request: Request):
+    pid = _valid_share(request)
+    if pid is None:
+        return err(SHARE_GONE, 404)
+    if not chat_enabled(pid) or not (store.get_share(request.path_params["code"]) or {}).get("chat", 1):
+        return err("The chat is turned off.", 403)
+    if request.method == "GET":
+        return JSONResponse(chat.since(pid, _after(request)), headers={"Cache-Control": "no-store"})
+    if int(request.headers.get("content-length") or 0) > 4000:
+        return err("too big", 413)
+    b = await body(request)
+    try:
+        msg = chat.post(pid, b.get("name"), b.get("text"), b.get("cid"))
+    except ValueError as e:
+        return err(str(e), 429)
+    return JSONResponse({"message": msg}, headers={"Cache-Control": "no-store"})
+
+
+async def printer_chat(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    if request.method == "DELETE":
+        chat.clear(pid)
+        return Response(status_code=204)
+    if request.method == "PATCH":
+        on = bool((await body(request)).get("enabled"))
+        off = [p for p in (store.settings().get("chat_off") or []) if p != pid] + ([] if on else [pid])
+        store.save_settings({"chat_off": off})
+        if not on:
+            chat.clear(pid)
+        return JSONResponse({"enabled": on})
+    if request.method == "POST":
+        if not chat_enabled(pid):
+            return err("The chat is turned off.", 400)
+        b = await body(request)
+        try:
+            return JSONResponse({"message": chat.post(pid, "Owner", b.get("text"), owner=True)})
+        except ValueError as e:
+            return err(str(e), 400)
+    return JSONResponse({**chat.since(pid, _after(request)), "enabled": chat_enabled(pid)}, headers={"Cache-Control": "no-store"})
 
 
 async def share_page(request: Request):
@@ -886,6 +960,7 @@ async def share_status(request: Request):
     out["cams"] = [{"name": c["name"], "live": c["live"]} for c in (v.get("cams") or [])]
     out["main_cam"] = (v.get("cam_settings") or {}).get("main", 0)
     out["video_live"] = setup()["video"] in ("live", "timelapse")
+    out["chat"] = chat_enabled(pid) and bool((store.get_share(request.path_params["code"]) or {}).get("chat", 1))
     row = store.get_share(request.path_params["code"])
     out["expires_at"] = row["expires_at"] if row else None
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
@@ -1371,6 +1446,8 @@ _app = Starlette(routes=[
     # public share pages: the only paths the tunnel will let in from outside
     Route("/share/printer/{pid:int}/{code}", share_page),
     Route("/share/printer/{pid:int}/{code}/status", share_status),
+    Route("/share/printer/{pid:int}/{code}/chat", share_chat, methods=["GET", "POST"]),
+    Route("/api/printers/{pid:int}/chat", printer_chat, methods=["GET", "POST", "DELETE", "PATCH"]),
     Route("/share/printer/{pid:int}/{code}/snapshot", share_snapshot),
     Route("/share/printer/{pid:int}/{code}/stream", share_stream),
     Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),

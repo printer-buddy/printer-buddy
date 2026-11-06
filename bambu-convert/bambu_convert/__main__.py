@@ -18,7 +18,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = json.loads(Path(a.config).read_text())
     printers = [p for p in cfg.get("printers", [])
-                if p.get("host") and p.get("serial") and p.get("access_code") and p.get("port")]
+                if p.get("host") and p.get("serial") and p.get("port") and (p.get("access_code") or p.get("brand") == "elegoo")]
     if not printers:
         print("no Bambu printers in", a.config)
         return 0

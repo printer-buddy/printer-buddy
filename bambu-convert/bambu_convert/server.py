@@ -424,7 +424,7 @@ class Bridge:
                     "missing_klippy_requirements": [], "api_version": [1, 5, 0], "api_version_string": "1.5.0"}
         if method == "printer.info":
             return {"state": "ready" if p.connected else "startup",
-                    "state_message": "Printer is ready" if p.connected else f"{getattr(p, 'brand', 'Bambu')} printer not reachable: {p.error}",
+                    "state_message": "Printer is ready" if p.connected else (f"{getattr(p, 'brand', 'Bambu')} printer not reachable: {p.error}" if p.error else "Connecting to the printer…"),
                     "hostname": p.name, "software_version": f"{getattr(p, 'brand', 'Bambu Lab')} {p.model}", "cpu_info": p.model,
                     "klipper_path": "", "python_path": "", "log_file": "", "config_file": "", "app": "Klipper"}
         if method == "server.connection.identify":

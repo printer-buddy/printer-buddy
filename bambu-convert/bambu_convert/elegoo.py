@@ -181,7 +181,7 @@ class Elegoo:
         message = f"print failed ({n.get('error')})" if s == "error" else ""
         o = {
             "webhooks": {"state": "ready" if self.connected else "shutdown",
-                         "state_message": "Printer is ready" if self.connected else f"Elegoo printer not reachable: {self.error}"},
+                         "state_message": "Printer is ready" if self.connected else (f"Elegoo printer not reachable: {self.error}" if self.error else "Connecting to the Elegoo printer…")},
             "print_stats": {"filename": self.filename() if printing or s in ("complete", "error", "cancelled") else "",
                             "state": s, "message": message, "print_duration": self.print_duration(),
                             "total_duration": self.total_duration(), "filament_used": 0.0,

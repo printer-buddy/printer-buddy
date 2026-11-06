@@ -26,7 +26,7 @@ from .core.net import get_json, http_get, http_stream
 from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .core.chat import Chat
 from .core.store import Store
-from .core.bambu import BambuBridge, discover_elegoo as bambu_discover
+from .core.bambu import discover_elegoo as bambu_discover
 from .core import components as comp
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
@@ -59,7 +59,6 @@ manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "dat
                 manager.snapshot, manager.cam_transform, manager.ai_mode, manager.ai_alert, manager.ai_update)
 manager.collect = Collector(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                             lambda: share_user_id(), lambda: manager.ai.model is not None)
-bambu = BambuBridge(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))))
 scan_lock = asyncio.Lock()
 
 
@@ -133,6 +132,51 @@ async def list_printers(request: Request):
     return JSONResponse({"printers": manager.views()})
 
 
+async def add_bridged(b: dict, host: str, bam: dict | None, ele: dict | None):
+    """A Bambu Lab or Elegoo printer, connected to directly (no Moonraker, no extra port)."""
+    name = (b.get("name") or "").strip()
+    if bam:
+        serial, code = str(bam.get("serial", "")).strip().upper(), str(bam.get("access_code", "")).strip()
+        if not serial or not code:
+            return err("a Bambu printer needs its serial number and access code")
+        kind, key, model, label = "bambu", "bambu", "", "Bambu printer"
+        hint = "the IP, serial number and access code, and that LAN mode is on"
+        name = name or f"Bambu {serial[-4:]}"
+    else:
+        model = "cc2" if str(ele.get("model", "")).lower() == "cc2" else "cc1"
+        serial, code = str(ele.get("serial", "")).strip(), str(ele.get("access_code", "")).strip()
+        kind, key = "elegoo", model
+        if model == "cc1":
+            label, hint = "Centauri Carbon", "the IP, and that the printer is on"
+            found = await bambu_discover(host)
+            if not found:
+                return err(f"couldn't find a Centauri Carbon at {host}: check the IP, and that the printer is on", 404)
+            serial, name = found["MainboardID"], name or str(found.get("Name") or "Centauri Carbon")
+        else:
+            label, hint = "Centauri Carbon 2", "the IP, serial number and access code, and that LAN mode is on"
+            if not serial or not code:
+                return err("a Centauri Carbon 2 needs its serial number and access code")
+            name = name or f"Centauri Carbon 2 {serial[-4:]}"
+    from .printers.native import PORTS
+    port = PORTS[key]
+    for r in store.list():
+        extra = json.loads(r.get("extra") or "{}") if r.get("extra") else {}
+        if (r["host"], r["port"]) == (host, port) or (extra.get("serial") and extra.get("serial") == serial):
+            return err("that printer is already added", 409)
+    extra = {"serial": serial, "access_code": code, "camera": "auto"}
+    if kind == "elegoo":
+        extra.update(brand="elegoo", model=model)
+    row = manager.add(name, host, port, None, kind, extra)
+    client = manager.clients[row["id"]]
+    for _ in range(30):
+        if client.klippy_state == "ready":
+            return JSONResponse(manager.view(row["id"]), status_code=201)
+        await asyncio.sleep(0.5)
+    reason = client.reason()
+    await manager.remove(row["id"])
+    return err(f"couldn't reach the {label} at {host}: {reason or 'no answer'}. Check {hint}", 404)
+
+
 async def add_printer(request: Request):
     b = await body(request)
     host = str(b.get("host", "")).strip()
@@ -145,43 +189,11 @@ async def add_printer(request: Request):
         return err("host is required")
     bam = b.get("bambu") if isinstance(b.get("bambu"), dict) else None
     ele = b.get("elegoo") if isinstance(b.get("elegoo"), dict) else None
-    label, hint = "Bambu printer", "the IP, serial number and access code, and that LAN mode is on"
     if bam or ele:
-        name = (b.get("name") or "").strip()
-        try:
-            if bam:
-                serial, code = str(bam.get("serial", "")).strip(), str(bam.get("access_code", "")).strip()
-                if not serial or not code:
-                    return err("a Bambu printer needs its serial number and access code")
-                port = await bambu.add(name or f"Bambu {serial[-4:]}", host, serial, code)
-            else:
-                model = "cc2" if str(ele.get("model", "")).lower() == "cc2" else "cc1"
-                serial, code = str(ele.get("serial", "")).strip(), str(ele.get("access_code", "")).strip()
-                label, hint = ("Centauri Carbon 2", "the IP, serial number and access code, and that LAN mode is on") if model == "cc2"                     else ("Centauri Carbon", "the IP, and that the printer is on")
-                if model == "cc1":
-                    found = await bambu_discover(host)
-                    if not found:
-                        return err(f"couldn't find a Centauri Carbon at {host}: check the IP, and that the printer is on", 404)
-                    serial, name = found["MainboardID"], name or str(found.get("Name") or "Centauri Carbon")
-                elif not serial or not code:
-                    return err("a Centauri Carbon 2 needs its serial number and access code")
-                port = await bambu.add(name or f"Centauri Carbon 2 {serial[-4:]}", host, serial, code, brand="elegoo", model=model)
-        except ValueError as e:
-            return err(str(e), 409)
-        real, host = host, "127.0.0.1"
-        info = None
-        for _ in range(20):
-            info = await discovery.probe(host, port, None)
-            if info:
-                break
-            await asyncio.sleep(1)
-        if not info:
-            await bambu.remove(port)
-            return err(f"couldn't reach the {label} at {real}: check {hint}", 404)
+        return await add_bridged(b, host, bam, ele)
     if store.find(host, port):
         return err("that printer is already added", 409)
-    if not (bam or ele):
-        info = await discovery.probe(host, port, api_key)
+    info = await discovery.probe(host, port, api_key)
     if not info:
         return err(f"no Moonraker found at {host}:{port}", 404)
     if info["needs_auth"] and not info["auth_ok"]:
@@ -251,10 +263,7 @@ async def delete_printer(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
-    row = store.get(pid)
     await manager.remove(pid)
-    if row and bambu.port_of(row.get("host", ""), row.get("port")):
-        await bambu.remove(row["port"])
     return Response(status_code=204)
 
 
@@ -266,6 +275,10 @@ async def snapshot(request: Request):
         cam = int(request.query_params.get("cam", 0))
     except ValueError:
         return err("bad camera number")
+    native = manager.clients[pid].native_camera
+    if native:
+        jpeg = await native.snapshot()
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"}) if jpeg else err("no webcam picture yet", 503)
     url = manager.clients[pid].snapshot_url(cam)
     if not url or not url.startswith("http://"):
         return err("no webcam", 404)
@@ -289,6 +302,13 @@ async def live_stream(request: Request):
         cam = int(request.query_params.get("cam", 0))
     except ValueError:
         return err("bad camera number")
+    native = manager.clients[pid].native_camera
+    if native:
+        async def frames():
+            async for jpeg in native.frames():
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg) + jpeg + b"\r\n"
+        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"Cache-Control": "no-store"})
     url = manager.clients[pid].stream_url(cam)
     if not url or not url.startswith("http://"):
         return err("this camera has no MJPEG stream", 404)
@@ -708,7 +728,7 @@ async def ai_save(request: Request):
 
 
 async def components_list(request: Request):
-    return JSONResponse(await asyncio.to_thread(comp.components, manager.ai.info().get("tag")))
+    return JSONResponse(await asyncio.to_thread(comp.components, manager.ai.info().get("tag"), request.query_params.get("fresh") == "1"))
 
 
 async def components_action(request: Request):
@@ -1400,9 +1420,7 @@ async def lifespan(app):
     await asyncio.to_thread(manager.ai.load)
     await manager.start()
     manager.collect.start()
-    bambu.start()
     yield
-    await bambu.stop()
     await manager.collect.stop()
     await manager.ai.stop()
     await manager.stop()

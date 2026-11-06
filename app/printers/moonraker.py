@@ -103,6 +103,7 @@ class MoonrakerClient:
         self.extras: list[str] = []
         self.macros: list[dict] = []
         self.pwm_pins: set[str] = set()
+        self.native_camera = None
         self._thumbs: dict[str, tuple[str, bytes] | None] = {}
         self._qmeta: dict[str, tuple[float, dict]] = {}
         self._ids = itertools.count(1)

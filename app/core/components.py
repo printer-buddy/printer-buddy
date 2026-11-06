@@ -128,7 +128,9 @@ def _stamp(name: str) -> tuple[str, str]:
         return "", ""
 
 
-def components(ai_tag: str | None) -> dict:
+def components(ai_tag: str | None, fresh: bool = False) -> dict:
+    if fresh:
+        _cache.clear()
     channel = env_get("PB_CHANNEL", "stable") or "stable"
     avail = latest()
     have = _installed()

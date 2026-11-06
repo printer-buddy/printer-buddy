@@ -53,6 +53,10 @@ class Store:
                 self.db.execute("ALTER TABLE printers ADD COLUMN aibox TEXT")
             if "aiarea" not in cols:
                 self.db.execute("ALTER TABLE printers ADD COLUMN aiarea TEXT")
+            if "kind" not in cols:
+                self.db.execute("ALTER TABLE printers ADD COLUMN kind TEXT NOT NULL DEFAULT 'moonraker'")
+            if "extra" not in cols:
+                self.db.execute("ALTER TABLE printers ADD COLUMN extra TEXT")
             if "until_print" not in {r["name"] for r in self.db.execute("PRAGMA table_info(shares)")}:
                 self.db.execute("ALTER TABLE shares ADD COLUMN until_print INTEGER NOT NULL DEFAULT 0")
             if "chat" not in {r["name"] for r in self.db.execute("PRAGMA table_info(shares)")}:
@@ -69,12 +73,17 @@ class Store:
         r = self.db.execute("SELECT * FROM printers WHERE host=? AND port=?", (host, port)).fetchone()
         return dict(r) if r else None
 
-    def add(self, name: str, host: str, port: int, api_key: str | None) -> dict:
+    def add(self, name: str, host: str, port: int, api_key: str | None, kind: str = "moonraker", extra: dict | None = None) -> dict:
         with self.db:
             cur = self.db.execute(
-                "INSERT INTO printers(name, host, port, api_key, created_at) VALUES (?,?,?,?,?)",
-                (name, host, port, api_key or None, time.time()))
+                "INSERT INTO printers(name, host, port, api_key, created_at, kind, extra) VALUES (?,?,?,?,?,?,?)",
+                (name, host, port, api_key or None, time.time(), kind, json.dumps(extra) if extra else None))
         return self.get(cur.lastrowid)
+
+    def set_native(self, pid: int, kind: str, host: str, port: int, extra: dict):
+        with self.db:
+            self.db.execute("UPDATE printers SET kind=?, host=?, port=?, extra=?, api_key=NULL WHERE id=?",
+                            (kind, host, port, json.dumps(extra), pid))
 
     def update(self, pid: int, **fields):
         allowed = {k: v for k, v in fields.items() if k in ("name", "api_key", "grp", "position", "cam", "notify", "ai", "aibox", "aiarea")}

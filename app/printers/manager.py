@@ -38,6 +38,8 @@ class Manager:
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
+        from .native import migrate_bridged
+        migrate_bridged(self.store)
         for row in self.store.list():
             self._spawn(row)
 
@@ -48,13 +50,21 @@ class Manager:
 
     def _spawn(self, row: dict):
         self.rows[row["id"]] = row
-        c = MoonrakerClient(row["id"], row["host"], row["port"], row["api_key"], self._on_change)
+        if row.get("kind") in ("bambu", "elegoo"):
+            from .native import BridgeClient
+            try:
+                extra = json.loads(row.get("extra") or "{}")
+            except ValueError:
+                extra = {}
+            c = BridgeClient(row["id"], row["host"], row["port"], row["api_key"], self._on_change, extra)
+        else:
+            c = MoonrakerClient(row["id"], row["host"], row["port"], row["api_key"], self._on_change)
         c.on_gcode = self._on_gcode
         self.clients[row["id"]] = c
         c.start()
 
-    def add(self, name: str, host: str, port: int, api_key: str | None) -> dict:
-        row = self.store.add(name, host, port, api_key)
+    def add(self, name: str, host: str, port: int, api_key: str | None, kind: str = "moonraker", extra: dict | None = None) -> dict:
+        row = self.store.add(name, host, port, api_key, kind, extra)
         self._spawn(row)
         return self.view(row["id"])
 
@@ -313,6 +323,8 @@ class Manager:
         if not c or not row:
             return None
         cam = (self._cam_settings(row) or {}).get("main", 0)
+        if c.native_camera:
+            return await c.native_camera.snapshot()
         url = c.snapshot_url(cam)
         if not url or not url.startswith("http://"):
             return None

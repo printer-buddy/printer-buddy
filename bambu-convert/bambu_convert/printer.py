@@ -278,7 +278,7 @@ class Bambu:
         sensors = heaters + (["temperature_sensor Chamber"] if chamber is not None else [])
         o = {
             "webhooks": {"state": "ready" if self.connected else "shutdown",
-                         "state_message": "Printer is ready" if self.connected else f"Bambu printer not reachable: {self.error}"},
+                         "state_message": "Printer is ready" if self.connected else (f"Bambu printer not reachable: {self.error}" if self.error else "Connecting to the Bambu printer…")},
             "print_stats": {"filename": self.filename() if printing or s in ("complete", "error", "cancelled") else "",
                             "state": s, "message": message, "print_duration": self.print_duration(),
                             "total_duration": self.total_duration(), "filament_used": 0.0,

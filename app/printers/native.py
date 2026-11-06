@@ -62,6 +62,7 @@ class BridgeClient(MoonrakerClient):
         self.bridge = Bridge(self.cfg, data_dir())
         self.native_camera = self.bridge.p.camera
         self._cl = Client(1, _Pipe(self), host)
+        self._names: frozenset = frozenset()
 
     # ------------------------------------------------------------ connection
 
@@ -70,6 +71,7 @@ class BridgeClient(MoonrakerClient):
         if self.cfg.get("brand") != "elegoo":
             asyncio.create_task(ensure_ffmpeg())
         b.clients[self._cl.id] = self._cl
+        b.p.listeners.append(self._objects_changed)
         b.start()
         try:
             info = await self._call("server.info")
@@ -84,7 +86,18 @@ class BridgeClient(MoonrakerClient):
                 await asyncio.sleep(3600)
         finally:
             b.clients.pop(self._cl.id, None)
+            if self._objects_changed in b.p.listeners:
+                b.p.listeners.remove(self._objects_changed)
             await b.stop()
+
+    async def _subscribe(self):
+        self._names = frozenset(self.bridge.p.objects())
+        await super()._subscribe()
+
+    def _objects_changed(self):
+        """The printer's first full report brings the AMS, chamber sensor and so on: subscribe to them when they appear."""
+        if self.klippy_state == "ready" and frozenset(self.bridge.p.objects()) != self._names:
+            asyncio.create_task(self._safe(self._subscribe()))
 
     async def _call(self, method: str, params: dict | None = None, timeout: float = 10.0):
         try:

@@ -190,9 +190,16 @@ class Bambu:
                             f"!! Printer refused {p.get('command')} (turn on LAN only + Developer mode on the printer)")
             if p.get("command") in (None, "push_status"):
                 _merge(self.report, p)
-                ipcam = (self.report.get("ipcam") or {}).get("rtsp_url") or ""
+                ipcam = self.report.get("ipcam") or {}
+                if ipcam != getattr(self, "_ipcam_seen", None):
+                    self._ipcam_seen = dict(ipcam)
+                    log.info("%s: the printer reports its camera as %s", self.name, json.dumps(ipcam))
+                url = str(ipcam.get("rtsp_url") or "")
                 if self._camera_mode == "auto":
-                    self.camera.rtsp_url = ipcam if ipcam.startswith("rtsp") else None
+                    self.camera.rtsp_url = url if url.startswith("rtsp") else None
+                    # an X1 or H2 lists rtsp_url ("disable" while LAN liveview is off); a P1 or A1 has no such field
+                    self.camera.off_reason = ("the printer's video is off: turn on LAN liveview on the printer"
+                                              if "rtsp_url" in ipcam and not url.startswith("rtsp") else None)
                 self._track_job()
                 self._changed()
         info = msg.get("info")

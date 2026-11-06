@@ -22,6 +22,7 @@ class Camera:
     def __init__(self, host: str, access_code: str):
         self.host, self.code = host, access_code
         self.rtsp_url: str | None = None
+        self.off_reason: str | None = None
         self.frame: bytes | None = None
         self.frame_at = 0.0
         self._wanted = 0.0
@@ -66,6 +67,10 @@ class Camera:
         try:
             while time.monotonic() - self._wanted < IDLE_STOP:
                 try:
+                    if self.off_reason and not self.rtsp_url:
+                        log.warning("camera %s: %s", self.host, self.off_reason)
+                        await asyncio.sleep(10)
+                        continue
                     if self.rtsp_url:
                         await self._rtsp()
                     else:

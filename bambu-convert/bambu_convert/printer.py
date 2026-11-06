@@ -196,7 +196,10 @@ class Bambu:
                     log.info("%s: the printer reports its camera as %s", self.name, json.dumps(ipcam))
                 url = str(ipcam.get("rtsp_url") or "")
                 if self._camera_mode == "auto":
-                    self.camera.rtsp_url = url if url.startswith("rtsp") else None
+                    if url.startswith("rtsp"):
+                        self.camera.rtsp_url, self.camera.guessed = url, False
+                    elif not self.camera.guessed:
+                        self.camera.rtsp_url = None
                     # an X1 or H2 lists rtsp_url ("disable" while LAN liveview is off); a P1 or A1 has no such field
                     self.camera.off_reason = ("the printer's video is off: turn on LAN liveview on the printer"
                                               if "rtsp_url" in ipcam and not url.startswith("rtsp") else None)

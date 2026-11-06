@@ -23,6 +23,8 @@ class Camera:
         self.host, self.code = host, access_code
         self.rtsp_url: str | None = None
         self.off_reason: str | None = None
+        self.guessed = False
+        self._fails = 0
         self.frame: bytes | None = None
         self.frame_at = 0.0
         self._wanted = 0.0
@@ -79,9 +81,23 @@ class Camera:
                     raise
                 except Exception as e:
                     log.info("camera %s: %s", self.host, e)
+                    self._switch_mode()
                     await asyncio.sleep(3)
         finally:
             self._task = None
+
+    def _switch_mode(self):
+        """A printer that doesn't say which camera it has: after 3 failures try the other way (picture port <-> video stream)."""
+        self._fails += 1
+        if self._fails < 3 or self.off_reason:
+            return
+        self._fails = 0
+        if not self.rtsp_url:
+            self.rtsp_url, self.guessed = f"rtsps://{self.host}:322/streaming/live/1", True
+            log.info("camera %s: no picture on port 6000, trying the printer's video stream", self.host)
+        elif self.guessed:
+            self.rtsp_url, self.guessed = None, False
+            log.info("camera %s: the video stream didn't work either, going back to port 6000", self.host)
 
     async def _jpeg(self):
         r, w = await asyncio.wait_for(asyncio.open_connection(self.host, 6000, ssl=_ctx(), server_hostname=None), 10)

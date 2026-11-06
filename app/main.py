@@ -24,7 +24,7 @@ from .printers import discovery
 from .printers.manager import Manager
 from .core.net import get_json, http_get, http_stream
 from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
-from .core.chat import Chat
+from .core.chat import Blocklist, Chat
 from .core.store import Store
 from .core.bambu import discover_elegoo as bambu_discover
 from .core import components as comp
@@ -908,7 +908,38 @@ def _valid_share(request: Request):
 
 
 SHARE_GONE = "This share link has expired or was turned off."
-chat = Chat()
+chat = Chat(Blocklist(os.path.join(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))), "chat-blocklist.txt"), lambda: store.settings().get("chat_builtin", "on") != "off"))
+CHAT_ALERTS = ("off", "flags", "all")
+_alerted: dict[int, list] = {}
+
+
+def chat_alert_mode() -> str:
+    mode = store.settings().get("chat_alert", "flags")
+    return mode if mode in CHAT_ALERTS else "flags"
+
+
+async def chat_alert(pid: int, msg: dict):
+    """Push a chat message or flag to the owner's phone through the notification settings (ntfy, Discord, ...)."""
+    mode, flag = chat_alert_mode(), msg.get("kind") == "flag"
+    if mode == "off" or (not flag and mode != "all") or not manager.notifier.enabled:
+        return
+    st, now = _alerted.setdefault(pid, [0.0, 0]), time.time()
+    if not flag and now - st[0] < 20:
+        st[1] += 1
+        return
+    name = (manager.rows.get(pid) or {}).get("name") or f"Printer {pid}"
+    text = f"{msg['name']}: {msg['text']}"
+    if flag:
+        title, text = f"Flagged: {name}", f"{msg['name']} wants you to look at the printer" + (f": {msg['text']}" if msg["kind"] == "flag" and msg["text"] != "wants you to look at the printer" else "")
+        image = await manager.snapshot(pid)
+    else:
+        title, image = f"Chat on {name}", None
+        text += f" (+{st[1]} more)" if st[1] else ""
+        st[0], st[1] = now, 0
+    try:
+        await manager.notifier.send(title, text, image)
+    except Exception as e:
+        logging.getLogger(__name__).warning("chat alert: %s", e)
 
 
 def chat_enabled(pid: int) -> bool:
@@ -937,7 +968,39 @@ async def share_chat(request: Request):
         msg = chat.post(pid, b.get("name"), b.get("text"), b.get("cid"))
     except ValueError as e:
         return err(str(e), 429)
+    asyncio.create_task(chat_alert(pid, msg))
     return JSONResponse({"message": msg}, headers={"Cache-Control": "no-store"})
+
+
+async def share_flag(request: Request):
+    pid = _valid_share(request)
+    if pid is None:
+        return err(SHARE_GONE, 404)
+    if not chat_enabled(pid) or not (store.get_share(request.path_params["code"]) or {}).get("chat", 1):
+        return err("The chat is turned off.", 403)
+    if int(request.headers.get("content-length") or 0) > 4000:
+        return err("too big", 413)
+    b = await body(request)
+    try:
+        msg = chat.flag(pid, b.get("name"), b.get("note"), b.get("cid"))
+    except ValueError as e:
+        return err(str(e), 429)
+    asyncio.create_task(chat_alert(pid, msg))
+    return JSONResponse({"message": msg}, headers={"Cache-Control": "no-store"})
+
+
+async def chat_settings(request: Request):
+    if request.method == "PUT":
+        b = await body(request)
+        if "alert" in b:
+            if b["alert"] not in CHAT_ALERTS:
+                return err("alert must be off, flags or all")
+            store.save_settings({"chat_alert": b["alert"]})
+        if "blocked" in b:
+            chat.block.save(b["blocked"])
+        if "builtin" in b:
+            store.save_settings({"chat_builtin": "on" if b["builtin"] else "off"})
+    return JSONResponse({"builtin": chat.block.builtin(), "alert": chat_alert_mode(), "blocked": chat.block.text(), "notifications": manager.notifier.enabled})
 
 
 async def printer_chat(request: Request):
@@ -1465,6 +1528,8 @@ _app = Starlette(routes=[
     Route("/share/printer/{pid:int}/{code}", share_page),
     Route("/share/printer/{pid:int}/{code}/status", share_status),
     Route("/share/printer/{pid:int}/{code}/chat", share_chat, methods=["GET", "POST"]),
+    Route("/share/printer/{pid:int}/{code}/flag", share_flag, methods=["POST"]),
+    Route("/api/chat/settings", chat_settings, methods=["GET", "PUT"]),
     Route("/api/printers/{pid:int}/chat", printer_chat, methods=["GET", "POST", "DELETE", "PATCH"]),
     Route("/share/printer/{pid:int}/{code}/snapshot", share_snapshot),
     Route("/share/printer/{pid:int}/{code}/stream", share_stream),

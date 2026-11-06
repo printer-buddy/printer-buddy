@@ -10,3 +10,6 @@ ui/
 app/media/timelapse.py
 app/core/notify.py
 streamer/
+
+# readable copy of the built-in chat blocklist
+app/core/chat-blocklist-plain.txt

@@ -25,6 +25,7 @@ class Camera:
         self.off_reason: str | None = None
         self.guessed = False
         self._fails = 0
+        self._tls_opt = True
         self.frame: bytes | None = None
         self.frame_at = 0.0
         self._wanted = 0.0
@@ -123,8 +124,8 @@ class Camera:
             raise RuntimeError("ffmpeg is needed for this printer's camera (RTSP)")
         url = self.rtsp_url.replace("rtsps://", f"rtsps://bblp:{self.code}@", 1)
         proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-loglevel", "error", "-tls_verify", "0", "-rtsp_transport", "tcp", "-i", url, "-an", "-r", "5",
-            "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ffmpeg, "-loglevel", "error", *(["-tls_verify", "0"] if self._tls_opt else []), "-rtsp_transport", "tcp",
+            "-i", url, "-an", "-r", "5", "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         buf = b""
         try:
@@ -132,6 +133,8 @@ class Camera:
                 chunk = await asyncio.wait_for(proc.stdout.read(65536), 15)
                 if not chunk:
                     err = (await proc.stderr.read()).decode(errors="replace").strip().splitlines()
+                    if any("Option not found" in l for l in err):
+                        self._tls_opt = False
                     raise RuntimeError(f"ffmpeg: {err[-1] if err else 'stream ended'}")
                 buf += chunk
                 while (end := buf.find(b"\xff\xd9")) != -1:

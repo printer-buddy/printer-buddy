@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,6 +22,21 @@ from bambu_convert.server import Bridge, Client, RPCError as BridgeError  # noqa
 
 log = logging.getLogger(__name__)
 PORTS = {"bambu": 8883, "cc1": 3030, "cc2": 1883}
+
+
+_ffmpeg_tried = False
+
+
+async def ensure_ffmpeg():
+    """The camera of an X1 or H2 is a video stream that only ffmpeg can turn into pictures: install it once if it's missing."""
+    global _ffmpeg_tried
+    if shutil.which("ffmpeg") or _ffmpeg_tried:
+        return
+    _ffmpeg_tried = True
+    from ..core import updater
+    log.info("installing ffmpeg for the Bambu camera")
+    ok = await asyncio.to_thread(updater.root, "pkg", "ffmpeg")
+    log.info("ffmpeg installed" if ok and shutil.which("ffmpeg") else "couldn't install ffmpeg: run 'sudo apt install ffmpeg' on the box")
 
 
 def data_dir() -> Path:
@@ -51,6 +67,8 @@ class BridgeClient(MoonrakerClient):
 
     async def _session(self):
         b = self.bridge
+        if self.cfg.get("brand") != "elegoo":
+            asyncio.create_task(ensure_ffmpeg())
         b.clients[self._cl.id] = self._cl
         b.start()
         try:

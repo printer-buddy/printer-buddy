@@ -1,8 +1,12 @@
 # Bambu Convert
 
-Makes Bambu Lab and Elegoo Centauri Carbon printers look like Klipper / Moonraker printers, so Printer Buddy, Fluidd and Mainsail can use them.
-One port per printer (7130, 7131, ...). Printer Buddy runs it while `data/bambu.json` lists printers; add them with
-Printer Buddy's **Add a printer by address** form (pick the **Printer type**).
+Makes Bambu Lab and Elegoo Centauri Carbon printers look like Klipper / Moonraker printers.
+
+**Printer Buddy uses this code directly, inside its own process.** Add a printer with its **Add a printer by address** form
+(pick the **Printer type**). There is no separate server and no extra port, and nothing to run.
+
+Run it by hand (see the end of this page) only to use these printers from Fluidd or Mainsail. That way it serves one Moonraker
+port per printer (7130, 7131, ...) from the printers listed in a `bambu.json` file.
 
 ## Elegoo Centauri Carbon
 

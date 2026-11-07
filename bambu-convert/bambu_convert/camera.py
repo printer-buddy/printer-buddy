@@ -16,6 +16,13 @@ def _ctx() -> ssl.SSLContext:
     return ctx
 
 
+STALL = 10.0
+
+
+class Stalled(Exception):
+    pass
+
+
 class Camera:
     """Latest JPEG from the printer: port 6000 on P1 / A1, RTSP (via ffmpeg) on X1 / H2. Runs only while watched."""
 
@@ -29,6 +36,7 @@ class Camera:
         self._tls_opt = True
         self.frame: bytes | None = None
         self.frame_at = 0.0
+        self._changed = 0.0
         self._wanted = 0.0
         self._task: asyncio.Task | None = None
         self._new = asyncio.Condition()
@@ -47,7 +55,7 @@ class Camera:
                 await asyncio.wait_for(self._new.wait(), timeout)
         except asyncio.TimeoutError:
             pass
-        return self.frame
+        return self.frame if self.frame and time.monotonic() - self.frame_at < 30 else None
 
     async def frames(self):
         last = None
@@ -63,7 +71,10 @@ class Camera:
                 yield last
 
     async def _publish(self, jpeg: bytes):
-        self.frame, self.frame_at = jpeg, time.monotonic()
+        now = time.monotonic()
+        if jpeg != self.frame:
+            self._changed = now
+        self.frame, self.frame_at = jpeg, now
         self._fails = 0
         self.confirmed = self.confirmed or bool(self.rtsp_url)
         async with self._new:
@@ -83,6 +94,9 @@ class Camera:
                         await self._jpeg()
                 except asyncio.CancelledError:
                     raise
+                except Stalled:
+                    log.info("camera %s: no new picture for %s s, reconnecting", self.host, int(STALL))
+                    await asyncio.sleep(1)
                 except Exception as e:
                     log.info("camera %s: %s", self.host, e)
                     self._switch_mode()
@@ -110,14 +124,23 @@ class Camera:
             auth += b"bblp".ljust(32, b"\0") + self.code.encode().ljust(32, b"\0")
             w.write(auth)
             await w.drain()
+            self._changed, got = time.monotonic(), False
             while time.monotonic() - self._wanted < IDLE_STOP:
-                head = await asyncio.wait_for(r.readexactly(16), 15)
+                if got and time.monotonic() - self._changed > STALL:
+                    raise Stalled()
+                try:
+                    head = await asyncio.wait_for(r.readexactly(16), STALL if got else 15)
+                except asyncio.TimeoutError:
+                    if got:
+                        raise Stalled() from None
+                    raise
                 size = struct.unpack("<I", head[:4])[0]
                 if size > 4_000_000:
                     raise ConnectionError("camera refused the access code")
                 data = await asyncio.wait_for(r.readexactly(size), 15)
                 if data[:2] == b"\xff\xd8" and data[-2:] == b"\xff\xd9":
                     await self._publish(data)
+                    got = True
         finally:
             w.close()
 
@@ -131,9 +154,17 @@ class Camera:
             "-i", url, "-an", "-r", "5", "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         buf = b""
+        self._changed = time.monotonic()
         try:
             while time.monotonic() - self._wanted < IDLE_STOP:
-                chunk = await asyncio.wait_for(proc.stdout.read(65536), 15)
+                if time.monotonic() - self._changed > STALL and self.confirmed:
+                    raise Stalled()
+                try:
+                    chunk = await asyncio.wait_for(proc.stdout.read(65536), 15 if not self.confirmed else STALL)
+                except asyncio.TimeoutError:
+                    if self.confirmed:
+                        raise Stalled() from None
+                    raise
                 if not chunk:
                     err = (await proc.stderr.read()).decode(errors="replace").strip().splitlines()
                     if any("Option not found" in l for l in err):

@@ -17,7 +17,7 @@ python3 -c "import numpy, PIL" 2>/dev/null || { echo "This needs the Python pack
 
 mkdir -p "$DIR"
 echo "Downloading to $DIR ..."
-fetch "$RAW/k1-ai/pb_ai.py" "$DIR/pb_ai.py"
+fetch "$RAW/sep-ai/pb_ai.py" "$DIR/pb_ai.py"
 fetch "$RAW/app/ai/lite_numpy.py" "$DIR/lite_numpy.py"
 fetch "$REL/model.json" "$DIR/model.json"
 fetch "$REL/printer-buddy-lite.npz" "$DIR/printer-buddy-lite.npz"

@@ -17,6 +17,7 @@ _SPACE = re.compile(r"[\x00-\x20\x7f​-‏  ]+")
 
 
 FLAG_GAP = 60.0
+BLOCK_WAIT = 10.0
 ROOM_FLAGS = 5
 BLOCKED = "That message has a word that isn't allowed here."
 LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i", "|": "i"})
@@ -142,14 +143,34 @@ class Chat:
         self.epoch: dict[int, int] = {}
         self.sent: dict[tuple, float] = {}
         self.recent: dict[int, deque] = {}
+        self.cool: dict[tuple, float] = {}
+
+    def _refuse(self, pid: int, name, text, cid, now: float):
+        """A blocked word: the viewer waits 10 seconds, and the owner gets to see what was tried."""
+        self.cool[(pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])] = now + BLOCK_WAIT
+        if len(self.cool) > 2000:
+            self.cool = {k: t for k, t in self.cool.items() if t > now}
+        mid = self.next.get(pid, 0) + 1
+        self.next[pid] = mid
+        self.rooms.setdefault(pid, deque(maxlen=KEEP)).append(
+            {"id": mid, "name": _clean(name, MAX_NAME) or "Viewer", "text": _clean(text, MAX_TEXT), "time": now,
+             "owner": False, "kind": "blocked"})
+        raise ValueError(BLOCKED)
+
+    def _wait(self, pid: int, cid, now: float):
+        left = self.cool.get((pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40]), 0.0) - now
+        if left > 0:
+            raise ValueError(f"Wait {int(left) + 1} seconds before trying again.")
 
     def post(self, pid: int, name: str, text: str, cid: str = "", owner: bool = False) -> dict:
         text = _clean(text, MAX_TEXT)
         if not text:
             raise ValueError("Type a message first.")
         now = time.time()
-        if not owner and self.block and (self.block.hits(text) or self.block.hits(name)):
-            raise ValueError(BLOCKED)
+        if not owner:
+            self._wait(pid, cid, now)
+            if self.block and (self.block.hits(text) or self.block.hits(name)):
+                self._refuse(pid, name, text, cid, now)
         if not owner:
             key = (pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])
             if now - self.sent.get(key, 0.0) < VIEWER_GAP:
@@ -174,8 +195,9 @@ class Chat:
         """A viewer asks the owner to look at the printer. Limited to one a minute each and a few at a time."""
         note = _clean(note, 100)
         now = time.time()
+        self._wait(pid, cid, now)
         if self.block and (self.block.hits(note) or self.block.hits(name)):
-            raise ValueError(BLOCKED)
+            self._refuse(pid, name, note, cid, now)
         key = (pid, "flag:" + re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])
         if now - self.sent.get(key, 0.0) < FLAG_GAP:
             raise ValueError("You already flagged this a moment ago.")
@@ -193,8 +215,8 @@ class Chat:
         self.rooms.setdefault(pid, deque(maxlen=KEEP)).append(msg)
         return msg
 
-    def since(self, pid: int, after: int = 0) -> dict:
-        return {"messages": [m for m in self.rooms.get(pid, ()) if m["id"] > after],
+    def since(self, pid: int, after: int = 0, owner: bool = False) -> dict:
+        return {"messages": [m for m in self.rooms.get(pid, ()) if m["id"] > after and (owner or m["kind"] != "blocked")],
                 "last": self.next.get(pid, 0), "epoch": self.epoch.get(pid, 0)}
 
     def clear(self, pid: int):

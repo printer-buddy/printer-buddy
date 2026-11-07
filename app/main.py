@@ -1025,7 +1025,7 @@ async def printer_chat(request: Request):
             return JSONResponse({"message": chat.post(pid, "Owner", b.get("text"), owner=True)})
         except ValueError as e:
             return err(str(e), 400)
-    return JSONResponse({**chat.since(pid, _after(request)), "enabled": chat_enabled(pid)}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({**chat.since(pid, _after(request), owner=True), "enabled": chat_enabled(pid)}, headers={"Cache-Control": "no-store"})
 
 
 async def share_page(request: Request):

@@ -34,7 +34,7 @@ RELEASES = "https://api.github.com/repos/printer-buddy/printer-buddy/releases?pe
 HDR = {"User-Agent": "printer-buddy", "Accept": "application/vnd.github+json"}
 CHANNEL_BRANCH = {"stable": "main", "nightly": "nightly"}
 # setting -> choices (first one is the default)
-CHOICES = {"PB_UI": ("advanced",), "PB_NOTIFY": ("basic", "advanced"), "PB_AI": ("off", "basic", "heavy"),
+CHOICES = {"PB_UI": ("advanced",), "PB_NOTIFY": ("basic", "advanced"), "PB_AI": ("off", "lite", "basic", "heavy"),
            "PB_VIDEO": ("snapshots", "live", "timelapse"), "PB_STREAM": ("off", "light", "basic", "advanced"),
            "PB_CHANNEL": ("stable", "nightly")}
 _releases: list | None = None
@@ -223,7 +223,7 @@ def ensure_ai() -> bool:
     kind = env("PB_AI")
     if kind == "off" or not (VENV / "pip").exists():
         return True
-    if platform.machine() not in ("aarch64", "arm64", "x86_64", "amd64"):
+    if kind != "lite" and platform.machine() not in ("aarch64", "arm64", "x86_64", "amd64"):
         say(f"AI detection needs a 64-bit system (this one is {platform.machine()}). Skipping AI; everything else works.")
         return True
     gpu = kind == "heavy" and nvidia_gpu()
@@ -231,7 +231,7 @@ def ensure_ai() -> bool:
     if gpu:
         # onnxruntime and onnxruntime-gpu can't be installed together
         run(VENV / "pip", "uninstall", "-q", "-y", "onnxruntime")
-    reqs = "requirements-ai-gpu.txt" if gpu else "requirements-ai.txt"
+    reqs = "requirements-ai-lite.txt" if kind == "lite" else "requirements-ai-gpu.txt" if gpu else "requirements-ai.txt"
     if not run(VENV / "pip", "install", "-q", "-r", ROOT / reqs):
         say("Couldn't install the AI libraries. Skipping AI; everything else works.")
         return True

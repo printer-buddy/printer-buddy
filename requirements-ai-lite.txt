@@ -1,0 +1,3 @@
+# Only needed for AI detection = lite (no onnxruntime).
+numpy>=1.16
+Pillow>=6.0

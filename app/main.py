@@ -1449,7 +1449,7 @@ async def test_notification(request: Request):
 
 SETUP = {
     "ui": ("PB_UI", ("advanced",)),
-    "ai": ("PB_AI", ("off", "basic", "heavy")),
+    "ai": ("PB_AI", ("off", "lite", "basic", "heavy")),
     "video": ("PB_VIDEO", ("snapshots", "live", "timelapse")),
     "notify": ("PB_NOTIFY", ("basic", "advanced")),
     "remote": ("PB_REMOTE", ("off", "on")),

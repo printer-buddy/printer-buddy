@@ -25,7 +25,7 @@ HISTORY_MAX = 4320   # checks kept per print for the score history chart (12h at
 
 
 def enabled() -> bool:
-    return kind() in ("basic", "heavy")
+    return kind() in ("lite", "basic", "heavy")
 
 
 def kind() -> str:
@@ -41,14 +41,20 @@ class Model:
         if want and hashlib.sha256(path.read_bytes()).hexdigest() != want:
             raise ValueError(f"{path.name} is damaged (checksum doesn't match model.json)")
         import numpy as np
-        import onnxruntime as ort
         self.np = np
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 2
-        avail = ort.get_available_providers()
-        wanted = [p for p in GPU_PROVIDERS if p in avail] + ["CPUExecutionProvider"]
-        self.sess = ort.InferenceSession(str(path), opts, providers=wanted)
-        self.provider = GPU_PROVIDERS.get(self.sess.get_providers()[0], "CPU")
+        if path.suffix == ".npz":
+            from .lite_numpy import LiteModel
+            self.lite = LiteModel.load(path)
+            self.provider = "CPU (numpy)"
+        else:
+            import onnxruntime as ort
+            self.lite = None
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = 2
+            avail = ort.get_available_providers()
+            wanted = [p for p in GPU_PROVIDERS if p in avail] + ["CPUExecutionProvider"]
+            self.sess = ort.InferenceSession(str(path), opts, providers=wanted)
+            self.provider = GPU_PROVIDERS.get(self.sess.get_providers()[0], "CPU")
         inp = self.meta["input"]
         self.size = int(inp["shape"][2])
         self.mean = np.array(inp["mean"], dtype=np.float32).reshape(3, 1, 1)
@@ -71,6 +77,8 @@ class Model:
         return ((x - self.mean) / self.std)[None].astype(self.np.float32)
 
     def _run(self, x):
+        if self.lite:
+            return self.lite.score(x[0])
         return self.sess.run([self.meta["output"]["name"]], {self.meta["input"]["name"]: x})[0][0]
 
     def score(self, jpeg: bytes, flip_h=False, flip_v=False, rotation=0) -> dict[str, float]:
@@ -266,7 +274,7 @@ class AI:
 
     async def check_now(self, pid: int) -> dict:
         if not enabled():
-            raise RuntimeError("AI detection is off (installer: AI detection = basic or heavy)")
+            raise RuntimeError("AI detection is off (installer: AI detection = lite, basic or heavy)")
         m = self.model
         if not m:
             raise RuntimeError(self.error or "No AI model loaded")

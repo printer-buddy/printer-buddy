@@ -20,7 +20,7 @@ INTERACTIVE=0
 # key|env var|name|choices (first one is the default)
 PARTS=(
   "ui|PB_UI|Interface|basic advanced"
-  "ai|PB_AI|AI detection|off basic heavy"
+  "ai|PB_AI|AI detection|off lite basic heavy"
   "video|PB_VIDEO|Video|snapshots live timelapse"
   "notify|PB_NOTIFY|Notifications|basic advanced"
   "remote|PB_REMOTE|Remote access|off on"
@@ -31,6 +31,7 @@ declare -A DESC=(
   [ui.basic]="dashboard, Quick View, printer status page"
   [ui.advanced]="Basic + Control, Console, Files, History, list view, groups"
   [ai.off]="no failure detection"
+  [ai.lite]="smallest model, uses very little memory; a bit less accurate"
   [ai.basic]="light model, runs on a Pi"
   [ai.heavy]="bigger, more accurate model; needs a strong PC or GPU"
   [video.snapshots]="camera pictures, refreshed every few seconds"
@@ -47,7 +48,7 @@ declare -A DESC=(
   [channel.stable]="tested releases (v1.x)"
   [channel.nightly]="newest builds, may have bugs"
 )
-BUILT=" ui.advanced ai.off ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.advanced channel.stable channel.nightly "
+BUILT=" ui.advanced ai.off ai.lite ai.basic ai.heavy video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on stream.off stream.light stream.basic stream.advanced channel.stable channel.nightly "
 
 W=55
 hr()    { printf '|%s|\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '-')"; }
@@ -636,7 +637,7 @@ declare -A GIVEN=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) shift ;;
-    -h|--help) echo "Usage: ./install.sh [-y] [--port N] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on] [--stream off|light|basic|advanced] [--channel stable|nightly] [--parts] [--streamer]"; exit 0 ;;
+    -h|--help) echo "Usage: ./install.sh [-y] [--port N] [--ui basic|advanced] [--ai off|lite|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on] [--stream off|light|basic|advanced] [--channel stable|nightly] [--parts] [--streamer]"; exit 0 ;;
     --parts) ensure_env; fetch_parts; exit $? ;;
     --streamer) ensure_env; ensure_streamer; exit $? ;;
     --port)

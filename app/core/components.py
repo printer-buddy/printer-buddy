@@ -26,7 +26,7 @@ PARTS = {
     "streamer": ("PB_STREAM", ("off", "light", "basic", "advanced"), ROOT / "streamer"),
 }
 REQUIRED = ("ui", "notify", "timelapse")
-AI_KINDS = ("off", "basic", "heavy")
+AI_KINDS = ("off", "lite", "basic", "heavy")
 _cache: dict = {}
 
 

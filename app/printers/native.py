@@ -108,6 +108,23 @@ class BridgeClient(MoonrakerClient):
     def reason(self) -> str | None:
         return self.bridge.p.error
 
+    # ------------------------------------------------------------ direct commands (no fake gcode)
+
+    COMMANDS = {"light": ("on",), "speed": ("percent",), "ams_load": ("gate",), "ams_unload": (),
+                "nozzle_temp": ("index", "target")}
+
+    async def command(self, action: str, **params):
+        """The UI's native controls call straight into bambu-convert, with no made-up gcode in between."""
+        if action not in self.COMMANDS:
+            raise RPCError(f"unknown command: {action}")
+        fn = getattr(self.bridge.p, action, None)
+        if not fn:
+            raise RPCError(f"{action} isn't supported on this printer")
+        try:
+            await fn(**{k: v for k, v in params.items() if k in self.COMMANDS[action]})
+        except BridgeError as e:
+            raise RPCError(str(e)) from e
+
     # ------------------------------------------------------------ files and pictures
 
     async def upload(self, filename: str, data: bytes, start: bool = False, root: str = "gcodes", folder: str = ""):

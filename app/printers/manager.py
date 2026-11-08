@@ -138,7 +138,7 @@ class Manager:
     def view(self, pid: int) -> dict:
         row = self.rows[pid]
         return {
-            "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
+            "id": pid, "name": row["name"], "host": row["host"], "port": row["port"], "kind": row.get("kind") or "moonraker",
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
             "cam_settings": self._cam_settings(row), "notify": row.get("notify") != 0,
             "recording": self.timelapse.recording(pid) if self.timelapse else None,

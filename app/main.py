@@ -1368,6 +1368,27 @@ async def printer_gcode(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def printer_command(request: Request):
+    """For Bambu/Elegoo controls: a plain action straight into the printer, no fake gcode in between."""
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    b = await body(request)
+    action = str(b.get("action") or "")
+    if not action:
+        return err("action is required")
+    client = manager.clients[pid]
+    if not hasattr(client, "command"):
+        return err("this printer doesn't take native commands", 400)
+    if client.connection != "online":
+        return err("printer is offline", 409)
+    try:
+        await client.command(action, **{k: v for k, v in b.items() if k != "action"})
+    except Exception as e:
+        return err(str(e) or type(e).__name__, 502)
+    return JSONResponse({"ok": True})
+
+
 async def events(request: Request):
     q = manager.subscribe()
 
@@ -1557,6 +1578,7 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
     Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
+    Route("/api/printers/{pid:int}/command", printer_command, methods=["POST"]),
     Route("/api/printers/{pid:int}/temps", temps),
     Route("/api/printers/{pid:int}/thumbnail", thumbnail),
     Route("/api/printers/{pid:int}/macros", macros),

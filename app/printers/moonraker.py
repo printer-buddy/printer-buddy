@@ -101,6 +101,8 @@ class MoonrakerClient:
         self.status: dict = {}
         self.webcams: list[dict] = []
         self.extras: list[str] = []
+        self.has_materials = False
+        self.has_purifier = False
         self.macros: list[dict] = []
         self.pwm_pins: set[str] = set()
         self.native_camera = None
@@ -290,6 +292,13 @@ class MoonrakerClient:
             objects[n] = None
         if "exclude_object" in names:
             objects["exclude_object"] = None
+        # per-nozzle filament info and a purifier/top-cover accessory (seen on the Snapmaker U1)
+        self.has_materials = "print_task_config" in names
+        self.has_purifier = "purifier" in names
+        if self.has_materials:
+            objects["print_task_config"] = None
+        if self.has_purifier:
+            objects["purifier"] = None
         self.outputs = [n for n in names if n.startswith(OUTPUT_PREFIXES)]
         self.fsensors = [n for n in names if n.startswith(FSENSOR_PREFIXES)]
         self.features = {f: f in names for f in FEATURES}
@@ -573,6 +582,8 @@ class MoonrakerClient:
             "homed_axes": s.get("toolhead", {}).get("homed_axes"),
             "position": (s.get("toolhead", {}).get("position") or [None] * 4)[:4],
             "sensors": self.sensors() if live else [],
+            "materials": self.materials() if live else None,
+            "purifier": self.purifier() if live else None,
             "macro_count": len(self.macros),
             "objects": self.print_objects() if live else None,
             "file_position": vs.get("file_position"),
@@ -730,6 +741,42 @@ class MoonrakerClient:
         return {"list": [{"name": o.get("name"), "center": o.get("center"), "polygon": o.get("polygon")}
                          for o in eo["objects"] if o.get("name")],
                 "excluded": eo.get("excluded_objects") or [], "current": eo.get("current_object")}
+
+    def materials(self) -> list[dict] | None:
+        """Per-nozzle filament info some printers report (seen on the Snapmaker U1, unverified elsewhere)."""
+        if not self.has_materials:
+            return None
+        c = self.status.get("print_task_config") or {}
+        vendors, colors = c.get("filament_vendor") or [], c.get("filament_color_rgba") or []
+        return [{"index": i, "vendor": v if v not in ("", "NONE") else None,
+                 "color": f"#{colors[i][:6]}" if i < len(colors) and len(colors[i]) >= 6 else None}
+                for i, v in enumerate(vendors)]
+
+    def purifier(self) -> dict | None:
+        """A Top Cover / purifier accessory some printers report (seen on the Snapmaker U1, unverified elsewhere)."""
+        if not self.has_purifier:
+            return None
+        p = self.status.get("purifier") or {}
+        return {"present": bool(p.get("power_detected")), "mode": p.get("mode"),
+                "exhaust": (p.get("exhaust_fan") or {}).get("speed"), "inner": (p.get("inner_fan") or {}).get("speed")}
+
+    async def command(self, action: str, **params):
+        """The same native-command route Bambu/Elegoo use, for the handful of Klipper printers that need one."""
+        if action == "purifier":
+            return await self.purifier_control(params.get("fan", ""), params.get("speed"))
+        raise RPCError(f"unknown command: {action}")
+
+    async def purifier_control(self, fan: str, speed: float | None = None):
+        """Not a gcode/RPC command: the printer's own HTTP endpoint for the purifier (seen on the Snapmaker U1)."""
+        if fan not in ("exhaust", "inner"):
+            raise RPCError("fan must be exhaust or inner")
+        body = {"fan": fan}
+        if speed is not None:
+            body["speed"] = round(max(0.0, min(1.0, speed)) * 100)
+        status, _, data = await http_post(f"http://{self.host}:{self.port}/printer/control/purifier",
+                                          json.dumps(body).encode(), {"content-type": "application/json"})
+        if status != 200:
+            raise RPCError(f"purifier control failed: HTTP {status}")
 
     def bed_area(self) -> list | None:
         th = self.status.get("toolhead", {})

@@ -18,6 +18,7 @@ ETA_MODE = "file"
 
 SUBSCRIBE = {
     "print_stats": None,
+    "idle_timeout": ["state"],
     "extruder": ["temperature", "target", "power", "pressure_advance", "smooth_time", "can_extrude"],
     "heater_bed": ["temperature", "target", "power"],
     "display_status": ["progress", "message"],
@@ -101,6 +102,13 @@ class MoonrakerClient:
         self.status: dict = {}
         self.webcams: list[dict] = []
         self.extras: list[str] = []
+        self.filament_diameter = 1.75
+        self.nozzle_diameter = 0.4
+        self.force_move = False
+        self.max_z_accel = 100.0
+        self.limits_default: dict = {}
+        self.multi_steppers: list[str] = []
+        self.pa_config = {"pressure_advance": 0.0, "smooth_time": 0.04}
         self.has_materials = False
         self.has_purifier = False
         self.macros: list[dict] = []
@@ -311,6 +319,8 @@ class MoonrakerClient:
         for n in ("manual_probe", "bed_screws", "screws_tilt_adjust"):
             if n in names:
                 objects[n] = None
+        if "motion_report" in names:
+            objects["motion_report"] = ["live_velocity", "live_extruder_velocity"]
         self.led_effects = [n for n in names if n.startswith("led_effect ")]
         for n in self.led_effects:
             objects[n] = ["enabled"]
@@ -331,6 +341,24 @@ class MoonrakerClient:
         await self._load_macros([n[len("gcode_macro "):] for n in names if n.startswith("gcode_macro ")])
         res = await self._call("printer.objects.subscribe", {"objects": objects})
         self.status = (res or {}).get("status", {})
+        try:
+            cfg = ((await self._call("printer.objects.query", {"objects": {"configfile": ["settings"]}}) or {})
+                   .get("status", {}).get("configfile", {}).get("settings", {}))
+            self.filament_diameter = float((cfg.get("extruder") or {}).get("filament_diameter") or 1.75)
+            self.nozzle_diameter = float((cfg.get("extruder") or {}).get("nozzle_diameter") or 0.4)
+            pr = cfg.get("printer") or {}
+            self.force_move = bool((cfg.get("force_move") or {}).get("enable_force_move")) and pr.get("kinematics") not in ("delta", "polar", "rotary_delta", "winch")
+            self.max_z_accel = float(pr.get("max_z_accel") or 100)
+            ma = float(pr.get("max_accel") or 100)
+            self.limits_default = {"max_velocity": float(pr.get("max_velocity") or 100), "max_accel": ma,
+                                   "square_corner_velocity": float(pr.get("square_corner_velocity") or 5),
+                                   "minimum_cruise_ratio": float(pr.get("minimum_cruise_ratio") or 0.5),
+                                   "max_accel_to_decel": float(pr.get("max_accel_to_decel") or ma / 2)}
+            self.multi_steppers = [a for a in "xyz" if f"stepper_{a}1" in cfg]
+            ex = cfg.get("extruder") or {}
+            self.pa_config = {"pressure_advance": float(ex.get("pressure_advance") or 0), "smooth_time": float(ex.get("pressure_advance_smooth_time") or 0.04)}
+        except (RPCError, asyncio.TimeoutError, ValueError, TypeError):
+            pass
         self._changed()
 
     async def _load_macros(self, names: list[str]):
@@ -564,11 +592,25 @@ class MoonrakerClient:
             "save_pending_items": (s.get("configfile", {}).get("save_config_pending_items") or {}) if live else {},
             "failed_components": self.failed_components,
             "state": state,
+            "idle_state": (s.get("idle_timeout") or {}).get("state") if live else None,
             "filename": ps.get("filename") or None,
             "message": ps.get("message") or ds.get("message") or None,
             "progress": progress,
             "print_duration": duration,
             "eta": eta,
+            "filament_used": ps.get("filament_used"),
+            "filament_diameter": self.filament_diameter,
+            "nozzle_diameter": self.nozzle_diameter,
+            "force_move": self.force_move,
+            "max_z_accel": self.max_z_accel,
+            "limits_default": self.limits_default,
+            "max_accel": s.get("toolhead", {}).get("max_accel"),
+            "multi_steppers": self.multi_steppers,
+            "pa_config": self.pa_config,
+            "slicer_eta": max(0.0, meta["estimated_time"] - duration) if state == "printing" and duration > 0 and meta.get("estimated_time") else None,
+            "file_eta": (duration / vs["progress"] - duration) if state == "printing" and duration > 0 and (vs.get("progress") or 0) > 0.01 else None,
+            "live_velocity": s.get("motion_report", {}).get("live_velocity") if live else None,
+            "live_flow": (s.get("motion_report", {}).get("live_extruder_velocity") or 0) * 3.14159265 * (self.filament_diameter / 2) ** 2 if live and "motion_report" in s else None,
             "nozzle": s.get("extruder", {}).get("temperature"),
             "nozzle_target": s.get("extruder", {}).get("target"),
             "bed": s.get("heater_bed", {}).get("temperature"),
@@ -795,5 +837,5 @@ class MoonrakerClient:
                     else "sensor")
             out.append({"id": obj, "name": label.get(obj) or _pretty(obj), "kind": kind,
                         "temp": st.get("temperature"), "target": st.get("target"),
-                        "power": st.get("power"), "speed": st.get("speed")})
+                        "power": st.get("power"), "speed": st.get("speed"), "rpm": st.get("rpm")})
         return out

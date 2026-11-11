@@ -1207,7 +1207,7 @@ RPC_ALLOW = {
     "machine.peripherals.usb": 20, "machine.peripherals.serial": 20, "machine.peripherals.video": 20, "machine.peripherals.canbus": 30,
     "server.history.get_job": 15, "printer.query_endstops.status": 10, "server.sensors.list": 10, "server.webcams.list": 10, "server.webcams.post_item": 15, "server.webcams.delete_item": 15, "printer.objects.list": 10,
     "server.database.list": 15, "server.database.post_backup": 120, "server.database.delete_backup": 15, "server.database.restore": 180, "server.database.compact": 180,
-    "server.info": 10, "server.announcements.list": 15, "server.announcements.dismiss": 15, "printer.info": 10,
+    "server.info": 10, "server.logs.rollover": 30, "server.announcements.list": 15, "server.announcements.dismiss": 15, "printer.info": 10,
 }
 
 
@@ -1349,6 +1349,20 @@ async def history_totals(request: Request):
         return JSONResponse(await client.history_totals())
     except Exception as ex:
         return err(str(ex) or type(ex).__name__, 502)
+
+
+async def history_reset(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    what = str((await body(request)).get("what", ""))
+    if what not in ("totals", "all"):
+        return err("what must be totals or all")
+    try:
+        await client.history_reset(what)
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    return JSONResponse({"ok": True})
 
 
 async def printer_gcode(request: Request):
@@ -1585,6 +1599,7 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}/files", list_files),
     Route("/api/printers/{pid:int}/history", history),
     Route("/api/printers/{pid:int}/history/totals", history_totals),
+    Route("/api/printers/{pid:int}/history/reset", history_reset, methods=["POST"]),
     Route("/api/printers/{pid:int}/files", delete_file, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/files/print", print_file, methods=["POST"]),
     Route("/api/printers/{pid:int}/queue", job_queue, methods=["GET", "POST"]),

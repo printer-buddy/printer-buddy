@@ -111,6 +111,7 @@ class MoonrakerClient:
         self.pa_config = {"pressure_advance": 0.0, "smooth_time": 0.04}
         self.has_materials = False
         self.has_purifier = False
+        self.beacon_models: list[str] | None = None
         self.macros: list[dict] = []
         self.pwm_pins: set[str] = set()
         self.native_camera = None
@@ -300,6 +301,8 @@ class MoonrakerClient:
             objects[n] = None
         if "exclude_object" in names:
             objects["exclude_object"] = None
+        if "beacon" in names:
+            objects["beacon"] = None
         # per-nozzle filament info and a purifier/top-cover accessory (seen on the Snapmaker U1)
         self.has_materials = "print_task_config" in names
         self.has_purifier = "purifier" in names
@@ -347,6 +350,7 @@ class MoonrakerClient:
             self.filament_diameter = float((cfg.get("extruder") or {}).get("filament_diameter") or 1.75)
             self.nozzle_diameter = float((cfg.get("extruder") or {}).get("nozzle_diameter") or 0.4)
             pr = cfg.get("printer") or {}
+            self.beacon_models = [k[len("beacon model "):] for k in cfg if k.startswith("beacon model ")] if "beacon" in cfg else None
             self.force_move = bool((cfg.get("force_move") or {}).get("enable_force_move")) and pr.get("kinematics") not in ("delta", "polar", "rotary_delta", "winch")
             self.max_z_accel = float(pr.get("max_z_accel") or 100)
             ma = float(pr.get("max_accel") or 100)
@@ -462,6 +466,12 @@ class MoonrakerClient:
                  "exists": j.get("exists", False)}
                 for j in (res or {}).get("jobs", [])]
         return {"count": (res or {}).get("count", len(jobs)), "jobs": jobs}
+
+    async def history_reset(self, what: str) -> None:
+        if what == "totals":
+            await self._call("server.history.reset_totals")
+        else:
+            await self._call("server.history.delete_job", {"all": True})
 
     async def history_totals(self) -> dict:
         res = await self._call("server.history.totals")
@@ -653,6 +663,7 @@ class MoonrakerClient:
                             "results": s.get("screws_tilt_adjust", {}).get("results") or {}} if live and "screws_tilt_adjust" in s else None,
             "mesh": {"profile": s.get("bed_mesh", {}).get("profile_name"),
                      "profiles": sorted((s.get("bed_mesh", {}).get("profiles") or {}).keys())} if "bed_mesh" in s else None,
+            "beacon": {"models": self.beacon_models, "active": s.get("beacon", {}).get("model")} if self.beacon_models is not None else None,
             "retraction": s.get("firmware_retraction"),
             "tools": self.tools_view() if live else None,
             "tool_changes": self.tool_changes_view() if live else None,

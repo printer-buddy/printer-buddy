@@ -301,6 +301,10 @@ class MoonrakerClient:
             objects[n] = None
         if "exclude_object" in names:
             objects["exclude_object"] = None
+        if "printer_notices" in names:
+            objects["printer_notices"] = None
+        if "box" in names:   # Creality K2 CFS
+            objects["box"] = None
         if "beacon" in names:
             objects["beacon"] = None
         # per-nozzle filament info and a purifier/top-cover accessory (seen on the Snapmaker U1)
@@ -597,6 +601,7 @@ class MoonrakerClient:
             "klippy_state": self.klippy_state,
             "klippy_message": self.klippy_message if self.klippy_state != "ready" else None,
             "klipper_warnings": [str(w.get("message") or w) for w in s.get("configfile", {}).get("warnings") or []] if live else [],
+            "printer_warnings": [str(n) for n in s.get("printer_notices", {}).get("notices") or []] if live else [],
             "moonraker_warnings": self.moonraker_warnings,
             "save_pending": bool(live and s.get("configfile", {}).get("save_config_pending")),
             "save_pending_items": (s.get("configfile", {}).get("save_config_pending_items") or {}) if live else {},
@@ -676,7 +681,7 @@ class MoonrakerClient:
     def mmu_view(self) -> dict | None:
         m = self.status.get("mmu")
         if not m:
-            return None
+            return self.cfs_view() if isinstance(self.status.get("box"), dict) else None
         mm = self.status.get("mmu_machine") or {}
 
         def at(key, i):
@@ -704,6 +709,50 @@ class MoonrakerClient:
         return {"enabled": m.get("enabled", True), "gate": m.get("gate"), "tool": m.get("tool"),
                 "loaded": m.get("filament") == "Loaded", "action": m.get("action"), "bypass": bool(m.get("has_bypass")),
                 "units": units, "gates": gates}
+
+    def cfs_view(self) -> dict | None:
+        # Creality K2 CFS: units T1-T4 with slots A-D, shown in the same shape as an MMU (read only, no load / unload commands)
+        b = self.status.get("box") or {}
+        names = {}
+        for e in b.get("same_material") or []:
+            if isinstance(e, list) and len(e) > 3 and isinstance(e[2], list):
+                for slot in e[2]:
+                    names[str(slot).strip()] = str(e[3] or "").strip()
+
+        def item(v, i):
+            return v[i] if isinstance(v, list) and i < len(v) else None
+
+        def color(v):
+            c = str(v or "").strip().lstrip("#")
+            if len(c) == 7 and c[0] == "0":
+                c = c[1:]
+            return "#" + c.lower() if re.fullmatch(r"[0-9a-fA-F]{6}", c) else None
+
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        units, gates, gate = [], [], -1
+        for t in ("T1", "T2", "T3", "T4"):
+            u = b.get(t)
+            if not isinstance(u, dict) or str(u.get("state") or "").lower() != "connect":
+                continue
+            first, active = len(gates), str(u.get("filament") or "").strip().upper()
+            for j, letter in enumerate("ABCD"):
+                slot, code = t + letter, str(item(u.get("material_type"), j) or "").strip()
+                c, material = color(item(u.get("color_value"), j)), names.get(t + letter) or ("" if code in ("", "-1") else code)
+                gates.append({"status": 1 if material or c else 0, "material": material, "color": c, "name": "", "label": slot,
+                              "temp": None, "remaining": None})
+                if active in (letter, slot):
+                    gate = first + j
+            units.append({"name": f"CFS {t}", "first": first, "count": 4, "temp": num(u.get("temperature")),
+                          "humidity": num(u.get("dry_and_humidity"))})
+        if not units:
+            return None
+        return {"enabled": b.get("enable", True) not in (False, 0, "0"), "gate": gate, "tool": None, "loaded": gate >= 0,
+                "action": None, "bypass": False, "units": units, "gates": gates, "readonly": True}
 
     def output_view(self) -> list[dict]:
         out = []

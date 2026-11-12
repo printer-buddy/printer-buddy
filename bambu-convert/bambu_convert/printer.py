@@ -4,6 +4,7 @@ import logging
 import re
 import time
 
+from . import hms
 from .camera import Camera
 from .ftps import Files
 from .mqtt import MQTT
@@ -283,7 +284,8 @@ class Bambu:
         layer, layers = int(_num(r.get("layer_num"))), int(_num(r.get("total_layer_num")))
         message = ""
         if s == "error":
-            message = f"print failed (error {int(_num(r.get('print_error'))):08X})"
+            code = int(_num(r.get("print_error")))
+            message = f"{hms.print_error(code, self.model) or 'print failed'} ({hms.print_error_code(code)})" if code else "print failed"
         heaters = names + ["heater_bed"]
         sensors = heaters + (["temperature_sensor Chamber"] if chamber is not None else [])
         o = {
@@ -316,6 +318,7 @@ class Bambu:
             "mcu": {"mcu_version": fw, "mcu_build_versions": "", "mcu_constants": {}, "last_stats": {}},
             "output_pin Chamber_light": {"value": 1.0 if any(
                 l.get("node") == "chamber_light" and l.get("mode") == "on" for l in r.get("lights_report") or []) else 0.0},
+            "printer_notices": {"notices": hms.notices(r.get("hms"), self.model)},
             "configfile": {"warnings": [], "save_config_pending": False, "save_config_pending_items": {},
                            "settings": self._settings(), "config": {}},
         }

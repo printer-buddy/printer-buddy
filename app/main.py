@@ -1049,6 +1049,28 @@ async def share_status(request: Request):
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
+PLATE_DIR = Path(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db")))) / "plates"
+
+
+async def plate(request: Request):
+    """The printer's empty-bed camera picture: GET it, PUT takes a new one now, DELETE clears it."""
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    f = PLATE_DIR / f"{pid}.jpg"
+    if request.method == "GET":
+        return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "no-store"}) if f.exists() else err("no empty-bed picture", 404)
+    if request.method == "DELETE":
+        f.unlink(missing_ok=True)
+        return JSONResponse({"ok": True})
+    jpeg = await manager.snapshot(pid)
+    if not jpeg:
+        return err("couldn't get a camera picture", 502)
+    PLATE_DIR.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(jpeg)
+    return JSONResponse({"ok": True})
+
+
 async def share_snapshot(request: Request):
     if _valid_share(request) is None:
         return err(SHARE_GONE, 404)
@@ -1341,6 +1363,69 @@ async def history(request: Request):
         return err(str(ex) or type(ex).__name__, 502)
 
 
+async def fleet_stats(request: Request):
+    """Every printer's print history since ``days`` ago (0 = all), for the home page's Fleet Stats card."""
+    try:
+        days = max(0, int(request.query_params.get("days", 30)))
+    except ValueError:
+        return err("bad days")
+    since = time.time() - days * 86400 if days else 0
+
+    async def one(pid: int):
+        c = manager.clients[pid]
+        if c.connection != "online":
+            return pid, None, "offline"
+        try:
+            return pid, await c.history_since(since), None
+        except Exception as ex:
+            return pid, None, str(ex) or type(ex).__name__
+
+    printers, jobs = [], []
+    for pid, js, e in await asyncio.gather(*(one(pid) for pid in list(manager.clients))):
+        name = manager.rows[pid]["name"]
+        printers.append({"id": pid, "name": name, "error": e})
+        jobs += [{"printer_id": pid, "printer": name, **j} for j in js or []]
+    return JSONResponse({"since": since, "printers": printers, "jobs": jobs}, headers={"Cache-Control": "no-store"})
+
+
+def _prom_label(v) -> str:
+    return str(v).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+async def metrics(request: Request):
+    """Prometheus text format: each printer's connection, state, progress and temperatures."""
+    rows = {"printerbuddy_printer_up": ("1 if Printer Buddy is connected to the printer", []),
+            "printerbuddy_printer_ready": ("1 if Klipper (or the bridge) reports ready", []),
+            "printerbuddy_printer_printing": ("1 while printing, 0 otherwise", []),
+            "printerbuddy_printer_paused": ("1 while paused, 0 otherwise", []),
+            "printerbuddy_print_progress": ("Print progress, 0 to 1", []),
+            "printerbuddy_print_duration_seconds": ("Printing time of the current print", []),
+            "printerbuddy_print_eta_seconds": ("Estimated time left of the current print", []),
+            "printerbuddy_temperature_celsius": ("Current temperature of each heater and sensor", []),
+            "printerbuddy_target_celsius": ("Target temperature of each heater", [])}
+    for v in manager.views():
+        lab = f'printer="{_prom_label(v.get("name"))}",id="{v.get("id")}"'
+        rows["printerbuddy_printer_up"][1].append((lab, 1 if v.get("connection") == "online" else 0))
+        rows["printerbuddy_printer_ready"][1].append((lab, 1 if v.get("klippy_state") == "ready" else 0))
+        rows["printerbuddy_printer_printing"][1].append((lab, 1 if v.get("state") == "printing" else 0))
+        rows["printerbuddy_printer_paused"][1].append((lab, 1 if v.get("state") == "paused" else 0))
+        if v.get("state") in ("printing", "paused"):
+            rows["printerbuddy_print_progress"][1].append((lab, v.get("progress") or 0))
+            rows["printerbuddy_print_duration_seconds"][1].append((lab, v.get("print_duration") or 0))
+            if v.get("eta") is not None:
+                rows["printerbuddy_print_eta_seconds"][1].append((lab, v.get("eta")))
+        for s in v.get("sensors") or []:
+            sl = f'{lab},sensor="{_prom_label(s.get("name") or s.get("id"))}"'
+            if isinstance(s.get("temp"), (int, float)):
+                rows["printerbuddy_temperature_celsius"][1].append((sl, s["temp"]))
+            if isinstance(s.get("target"), (int, float)):
+                rows["printerbuddy_target_celsius"][1].append((sl, s["target"]))
+    out = []
+    for name, (help_, samples) in rows.items():
+        out += [f"# HELP {name} {help_}", f"# TYPE {name} gauge"] + [f"{name}{{{lab}}} {float(val):g}" for lab, val in samples]
+    return PlainTextResponse("\n".join(out) + "\n", media_type="text/plain; version=0.0.4")
+
+
 async def history_totals(request: Request):
     client, e = _online_client(request)
     if e:
@@ -1554,6 +1639,7 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}", update_printer, methods=["PATCH"]),
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
+    Route("/api/printers/{pid:int}/plate", plate, methods=["GET", "PUT", "DELETE"]),
     Route("/api/printers/{pid:int}/stream", live_stream),
     Route("/api/printers/{pid:int}/shares", list_shares),
     Route("/api/printers/{pid:int}/shares", create_share, methods=["POST"]),
@@ -1599,6 +1685,8 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}/files", list_files),
     Route("/api/printers/{pid:int}/history", history),
     Route("/api/printers/{pid:int}/history/totals", history_totals),
+    Route("/api/stats", fleet_stats),
+    Route("/metrics", metrics),
     Route("/api/printers/{pid:int}/history/reset", history_reset, methods=["POST"]),
     Route("/api/printers/{pid:int}/files", delete_file, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/files/print", print_file, methods=["POST"]),

@@ -477,6 +477,12 @@ class MoonrakerClient:
         else:
             await self._call("server.history.delete_job", {"all": True})
 
+    async def history_since(self, since: float, limit: int = 5000) -> list[dict]:
+        res = await self._call("server.history.list", {"since": since, "limit": limit, "order": "desc"}, timeout=20)
+        return [{"filename": j.get("filename"), "status": j.get("status"), "start_time": j.get("start_time"),
+                 "print_duration": j.get("print_duration") or 0, "filament_used": j.get("filament_used") or 0}
+                for j in (res or {}).get("jobs", [])]
+
     async def history_totals(self) -> dict:
         res = await self._call("server.history.totals")
         return (res or {}).get("job_totals", {})

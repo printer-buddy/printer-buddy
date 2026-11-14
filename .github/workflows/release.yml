@@ -94,7 +94,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
         run: |
-          npm install -g @github/copilot
+          npm install -g --include=optional @github/copilot
           cat > prompt.txt <<EOF
           You write release notes for Printer Buddy, a web app for managing 3D printers. Below is the list of commits with the files each one changed. For every commit, read the real code change by running git show followed by the commit hash (you may also use git diff and git log) before you write about it, so you describe what the code does, not just what the message says. Only use those read-only git commands. Do not change anything.
           Reply in Markdown, no preamble, grouped under these headings, leaving out any that would be empty:
@@ -144,7 +144,3 @@ jobs:
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$commit" --latest=false \
             --title "Printer Buddy ${tag#core-}" --notes "$notes"
 
-      # releases made with github.token don't start other workflows, so start updates list here
-      - name: Update updates.txt
-        if: inputs.test != true
-        run: gh workflow run updates-list.yml --repo "$GITHUB_REPOSITORY"

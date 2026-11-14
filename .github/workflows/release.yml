@@ -63,6 +63,12 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "last=$last" >> "$GITHUB_OUTPUT"
+          base=""
+          if [ -n "$last" ]; then
+            base="$(git log -1 --format=%B "core-v$last" | sed -n 's/^Squashed from nightly@\([0-9a-f]\{7,40\}\).*/\1/p' | head -1)"
+            [ -n "$base" ] || base="core-v$last"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "Last release: ${last:-none}. This run: core-v$VERSION ($(grep mode= "$GITHUB_OUTPUT" | cut -d= -f2))"
 
       - name: Roll main back
@@ -74,7 +80,7 @@ jobs:
       - name: List the changes
         if: steps.ver.outputs.mode == 'release'
         run: |
-          range="${{ steps.ver.outputs.last }}"; [ -n "$range" ] && range="core-v$range..HEAD" || range="HEAD"
+          range="${{ steps.ver.outputs.base }}"; [ -n "$range" ] && range="$range..HEAD" || range="HEAD"
           git log --no-merges --pretty='- %s' $range | head -80 > changes.txt
           [ -s changes.txt ] || echo "- No changes since the last release" > changes.txt
           cat changes.txt
@@ -129,8 +135,13 @@ jobs:
           notes="$notes"$'\n\n'"Commit $GITHUB_SHA. Stable installs follow the main branch."
           needs="$(grep -v '^\s*#' needs.txt 2>/dev/null | grep . | paste -sd, - | sed 's/,/, /g' || true)"
           [ -n "$needs" ] && notes="$notes"$'\n\n'"needs: $needs"
-          git push --force-with-lease origin "HEAD:refs/heads/main"
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git fetch -q origin main || true
+          parent="$(git rev-parse -q --verify origin/main || true)"
+          commit="$(git commit-tree "HEAD^{tree}" ${parent:+-p "$parent"} -m "Printer Buddy ${tag#core-}" -m "Squashed from nightly@$(git rev-parse HEAD)")"
+          git push origin "$commit:refs/heads/main"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$commit" --latest=false \
             --title "Printer Buddy ${tag#core-}" --notes "$notes"
 
       # releases made with github.token don't start other workflows, so start updates list here

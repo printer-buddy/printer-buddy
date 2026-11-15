@@ -46,17 +46,24 @@ async def _read_headers(reader: asyncio.StreamReader) -> tuple[int, dict[str, st
     return status, headers
 
 
-async def _request(method: str, url: str, headers: dict[str, str], max_bytes: int, body: bytes | None = None):
+async def _request(method: str, url: str, headers: dict[str, str], max_bytes: int, body: bytes | None = None,
+                   chunks=None, length: int = 0):
     host, port, path, host_hdr = _split(url, ("http",))
     reader, writer = await asyncio.open_connection(host, port)
     try:
         hdrs = {"Host": host_hdr, "Connection": "close", "User-Agent": UA, "Accept": "*/*", **headers}
         if body is not None:
             hdrs["Content-Length"] = str(len(body))
+        elif chunks is not None:
+            hdrs["Content-Length"] = str(length)
         req = f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in hdrs.items()) + "\r\n"
         writer.write(req.encode("latin-1"))
         if body:
             writer.write(body)
+        elif chunks is not None:
+            async for chunk in chunks:
+                writer.write(chunk)
+                await writer.drain()
         await writer.drain()
         status, rh = await _read_headers(reader)
         body = bytearray()
@@ -92,6 +99,11 @@ async def http_get(url: str, headers: dict[str, str] | None = None, timeout: flo
 async def http_post(url: str, body: bytes, headers: dict[str, str] | None = None, timeout: float = 300.0,
                     max_bytes: int = 2_000_000) -> tuple[int, dict[str, str], bytes]:
     return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, body), timeout)
+
+
+async def http_post_stream(url: str, chunks, length: int, headers: dict[str, str] | None = None, timeout: float = 3600.0,
+                           max_bytes: int = 2_000_000) -> tuple[int, dict[str, str], bytes]:
+    return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, chunks=chunks, length=length), timeout)
 
 
 class HTTPStream:

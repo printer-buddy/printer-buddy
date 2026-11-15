@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -21,10 +22,11 @@ from .mqtt import MQTT
 
 log = logging.getLogger("elegoo.printer")
 
-CC1_STATES = {0: "standby", 1: "printing", 5: "paused", 6: "paused", 8: "cancelled", 9: "complete", 10: "printing",
-              11: "printing", 12: "printing", 13: "printing", 14: "error", 15: "printing", 16: "printing",
+CC1_STATES = {0: "standby", 1: "printing", 5: "printing", 6: "paused", 7: "printing", 8: "cancelled", 9: "complete",
+              10: "printing", 11: "printing", 12: "printing", 13: "printing", 14: "error", 15: "printing", 16: "printing",
               17: "printing", 18: "printing", 19: "printing", 20: "printing", 21: "printing", 22: "printing"}
 FANS = {"fan": "ModelFan", "fan_generic Aux": "AuxiliaryFan", "fan_generic Chamber": "BoxFan"}
+CC2_PRINTING = {2501: "printing", 2502: "paused", 2505: "paused", 2503: "printing", 2504: "cancelled", 2077: "complete"}
 SPEED_MODES = {0: 50, 1: 100, 2: 130, 3: 160}
 UPLOAD_CHUNK = 1024 * 1024
 
@@ -34,6 +36,15 @@ def _num(v, default=0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _merge(base: dict, delta: dict) -> dict:
+    for k, v in delta.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _merge(base[k], v)
+        else:
+            base[k] = v
+    return base
 
 
 def _pair(v) -> tuple[float, float]:
@@ -330,15 +341,16 @@ class CC1(Elegoo):
                     self._ws, self.connected, self.error, backoff = ws, True, None, 2
                     log.info("%s: connected to %s", self.name, self.host)
                     poll = asyncio.create_task(self._poll())
+                    video = asyncio.create_task(self._video())
                     try:
                         await self._send(0, wait=False)
                         await self._send(1, wait=False)
-                        await self._send(512, {"TimePeriod": 1000}, wait=False)
                         self._changed()
                         async for raw in ws:
                             self._on_message(raw)
                     finally:
                         poll.cancel()
+                        video.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -357,7 +369,14 @@ class CC1(Elegoo):
         while True:
             await asyncio.sleep(10)
             with contextlib.suppress(Exception):
+                await self._ws.send("ping")
                 await self._send(0, wait=False)
+
+    async def _video(self):
+        with contextlib.suppress(Exception):
+            url = str((await self._send(386, {"Enable": 1})).get("VideoUrl") or "")
+            if url.startswith("http"):
+                self.camera.url = url
 
     async def _send(self, cmd: int, data: dict | None = None, wait: bool = True, timeout: float = 10) -> dict:
         if not self._ws:
@@ -436,8 +455,8 @@ class CC1(Elegoo):
         if isinstance(fans, dict):
             n["fans"] = {k: round(_num(v) / 100, 2) for k, v in fans.items()}
         light = st.get("LightStatus")
-        if isinstance(light, dict) and "SecondLight" in light:
-            n["light"] = bool(light["SecondLight"])
+        if isinstance(light, dict) and ("SecondLight" in light or "MainLight" in light):
+            n["light"] = bool(light.get("SecondLight", light.get("MainLight")))
         self._track_job()
         self._changed()
 
@@ -492,8 +511,7 @@ class CC1(Elegoo):
         for f in reply.get("FileList") or []:
             name = str(f.get("name") or "")
             if name and f.get("type", 1) != 0:
-                out.append({"name": name.split("/")[-1], "size": int(_num(f.get("FileSize"))),
-                            "modified": _num(f.get("CreateTime")) or time.time()})
+                out.append({"name": name.split("/")[-1], "size": 0, "modified": 0})
         return out
 
     async def file_delete(self, path: str):
@@ -545,13 +563,14 @@ class CC2(Elegoo):
         self.model = "Centauri Carbon 2"
         self.mqtt_port = int(cfg.get("mqtt_port") or 1883)
         self.http_port = int(cfg.get("http_port") or 80)
-        self.camera = MjpegCamera(self.host, f"http://{self.host}:{int(cfg.get('camera_port') or 8080)}/")
+        self.camera = MjpegCamera(self.host, f"http://{self.host}:{int(cfg.get('camera_port') or 8080)}/?action=stream")
         self.client_id = f"1_PC_{int(time.time()) % 100000}"
         self._mqtt: MQTT | None = None
         self._ids = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._last_request = 0.0
         self._lock = asyncio.Lock()
+        self._status: dict = {}
         self.new_protocol = True
 
     @property
@@ -645,8 +664,11 @@ class CC2(Elegoo):
             if fut and not fut.done():
                 fut.set_result(msg)
             if isinstance(result, dict) and ("machine_status" in result or "extruder" in result):
-                self._apply(result)
-            elif msg.get("method") in (6000, 6008) and isinstance(msg.get("params"), dict):
+                self._status = json.loads(json.dumps(result))
+                self._apply(self._status)
+            elif msg.get("method") == 6000 and isinstance(msg.get("params"), dict):
+                self._apply(_merge(self._status, msg["params"]))
+            elif msg.get("method") == 6008 and isinstance(msg.get("params"), dict):
                 self._apply(msg["params"])
             elif msg.get("method") == 1001 or (isinstance(result, dict) and "firmware_version" in result):
                 self.firmware = str((result or {}).get("firmware_version") or self.firmware)
@@ -655,19 +677,29 @@ class CC2(Elegoo):
         n = self.n
         ps, ms = st.get("print_status") or {}, st.get("machine_status") or {}
         if ps or ms:
-            text = str(ps.get("state") or "").lower()
-            if any(w in text for w in ("pause",)):
-                n["state"] = "paused"
-            elif any(w in text for w in ("complet", "finish", "done")):
-                n["state"] = "complete"
-            elif any(w in text for w in ("stop", "cancel")):
-                n["state"] = "cancelled"
-            elif any(w in text for w in ("error", "fail")):
-                n["state"] = "error"
-            elif text:
-                n["state"] = "printing"
-            else:
-                n["state"] = "standby"
+            if "state" in ps:
+                text = str(ps.get("state") or "").lower()
+                if any(w in text for w in ("pause",)):
+                    n["state"] = "paused"
+                elif any(w in text for w in ("complet", "finish", "done")):
+                    n["state"] = "complete"
+                elif any(w in text for w in ("stop", "cancel")):
+                    n["state"] = "cancelled"
+                elif any(w in text for w in ("error", "fail")):
+                    n["state"] = "error"
+                elif text and text not in ("standby", "idle"):
+                    n["state"] = "printing"
+                else:
+                    n["state"] = "standby"
+            if ms.get("status") is not None:
+                code = int(_num(ms.get("status"), -1))
+                sub = int(_num(ms.get("sub_status"), -1))
+                if code == 2 and sub in CC2_PRINTING:
+                    n["state"] = CC2_PRINTING[sub]
+                elif code == 2 and n.get("state") not in ("printing", "paused"):
+                    n["state"] = "printing"
+                elif code == 14:
+                    n["state"] = "error"
             n["filename"] = ps.get("filename") or n.get("filename") or ""
             n["layer"] = ps.get("current_layer")
             n["layers"] = ps.get("total_layer") or n.get("layers")
@@ -725,7 +757,9 @@ class CC2(Elegoo):
         await self._call(1030, {key: int(round(fraction * 255))})
 
     async def start(self, path: str, plate: int = 1, filaments: list[dict] | None = None):
-        await self._call(1020, {"filename": path.lstrip("/"), "storage_media": "local"})
+        await self._call(1020, {"filename": path.lstrip("/"), "storage_media": "local",
+                                "config": {"delay_video": False, "printer_check": False, "print_layout": "A",
+                                           "bedlevel_force": False, "slot_map": []}})
 
     async def file_list(self) -> list[dict]:
         out, offset = [], 0
@@ -745,7 +779,7 @@ class CC2(Elegoo):
         await self._call(1047, {"storage_media": "local", "file_path": [path]})
 
     async def file_read(self, path: str) -> bytes:
-        return await asyncio.to_thread(self._get, f"http://{self.host}:{self.http_port}/download/local/{path}?X-Token={self.code}")
+        return await asyncio.to_thread(self._get, f"http://{self.host}:{self.http_port}/download?X-Token={self.code}?file_name={urllib.parse.quote(path)}")
 
     @staticmethod
     def _get(url: str) -> bytes:

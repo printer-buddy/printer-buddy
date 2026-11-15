@@ -12,7 +12,6 @@ from .mqtt import MQTT
 log = logging.getLogger("bambu.printer")
 
 # printer_type -> (name, bed x, bed y, max z, nozzles, chamber sensor, aux fan, chamber fan, bed max temp)
-# TODO: bed sizes of X2D / A2L / H2C / H2S need checking
 MODELS = {
     "BL-P001": ("X1 Carbon", 256, 256, 256, 1, True, True, True, 100),
     "BL-P002": ("X1", 256, 256, 256, 1, True, True, True, 100),
@@ -21,17 +20,19 @@ MODELS = {
     "C12": ("P1S", 256, 256, 256, 1, False, True, True, 100),
     "N1": ("A1 mini", 180, 180, 180, 1, False, False, False, 80),
     "N2S": ("A1", 256, 256, 256, 1, False, False, False, 100),
-    "N6": ("X2D", 256, 256, 256, 2, True, True, True, 100),
-    "N7": ("P2S", 256, 256, 256, 1, True, True, True, 100),
-    "N9": ("A2L", 256, 256, 256, 1, False, False, False, 80),
-    "O1C": ("H2C", 325, 320, 325, 2, True, True, True, 100),
-    "O1C2": ("H2C", 325, 320, 325, 2, True, True, True, 100),
-    "O1D": ("H2D", 325, 320, 325, 2, True, True, True, 100),
+    "N6": ("X2D", 256, 256, 260, 2, True, True, True, 120),
+    "N7": ("P2S", 256, 256, 256, 1, True, True, True, 110),
+    "N9": ("A2L", 330, 320, 325, 1, False, False, False, 80),
+    "N10": ("H3C", 330, 320, 325, 1, True, True, True, 120),
+    "O1C": ("H2C", 325, 320, 320, 2, True, True, True, 120),
+    "O1C2": ("H2C", 325, 320, 320, 2, True, True, True, 120),
+    "O1D": ("H2D", 325, 320, 325, 2, True, True, True, 120),
     "O1E": ("H2D Pro", 325, 320, 325, 2, True, True, True, 100),
-    "O1S": ("H2S", 340, 320, 340, 1, True, True, True, 100),
+    "O1S": ("H2S", 340, 320, 340, 1, True, True, True, 120),
 }
 SERIALS = {"00M": "BL-P001", "00W": "BL-P002", "03W": "C13", "01S": "C11", "01P": "C12", "030": "N1", "039": "N2S",
-           "094": "O1D"}
+           "094": "O1D", "239": "O1E", "093": "O1S", "31B": "O1C", "20P": "N6", "22E": "N7", "26A": "N9", "32X": "N10"}
+SDCARD_URL = {"BL-P001", "BL-P002", "C13", "C11", "C12", "N1", "N2S"}
 UNKNOWN = ("Bambu Lab", 256, 256, 256, 1, True, True, True, 100)
 STATES = {"IDLE": "standby", "PREPARE": "printing", "SLICING": "printing", "RUNNING": "printing",
           "PAUSE": "paused", "FINISH": "complete", "FAILED": "error"}
@@ -494,13 +495,13 @@ class Bambu:
     async def start(self, path: str, plate: int = 1, filaments: list[dict] | None = None):
         path = path.lstrip("/")
         if path.lower().endswith(".3mf"):
-            # H2 printers take ftp:///, the rest file:///sdcard/ (same as Bambu Studio / ha-bambulab)
-            h2 = str(self.report.get("printer_type", "")).startswith("O1") or self.serial.startswith("094")
+            # X1, P1 and A1 printers take file:///sdcard/, every other printer ftp:/// (same as ha-bambulab)
+            sdcard = str(self.report.get("printer_type") or SERIALS.get(self.serial[:3], "")) in SDCARD_URL
             mapping = self.ams_mapping(filaments or [{}])
             await self._send({"print": {
                 "command": "project_file", "param": f"Metadata/plate_{plate}.gcode", "project_id": "0",
                 "profile_id": "0", "task_id": "0", "subtask_id": "0", "subtask_name": path.rsplit("/", 1)[-1],
-                "url": f"ftp:///{path}" if h2 else f"file:///sdcard/{path}", "timelapse": False,
+                "url": f"file:///sdcard/{path}" if sdcard else f"ftp:///{path}", "timelapse": False,
                 "bed_type": "auto", "bed_leveling": True, "flow_cali": True, "vibration_cali": True,
                 "layer_inspect": True, "use_ams": bool(mapping), "ams_mapping": mapping or [0]}})
         else:

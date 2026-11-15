@@ -1100,7 +1100,7 @@ async def printer_action(request: Request):
     return JSONResponse({"ok": True})
 
 
-GCODE_EXT = (".gcode", ".gco", ".g")
+GCODE_EXT = (".gcode", ".g", ".gc", ".gco", ".ufp", ".nc", ".3mf")
 CONFIG_EXT = (".conf", ".cfg", ".md", ".css", ".jpg", ".jpeg", ".png", ".gif")
 MAX_UPLOAD = 1024 * 1024 * 1024
 
@@ -1271,14 +1271,14 @@ async def printer_file(request: Request):
     if not root:
         return err("bad root or path")
     if request.method == "PUT":
-        if root != "config":
-            return err("only config files can be saved here")
+        if root not in ("config", "gcodes"):
+            return err("only config and G-code files can be saved here")
         data = await request.body()
         if len(data) > 5_000_000:
             return err("file is too big", 413)
         folder, _, name = path.rpartition("/")
         try:
-            await client.upload(name, data, root="config", folder=folder)
+            await client.upload(name, data, root=root, folder=folder)
         except Exception as ex:
             return err(str(ex) or type(ex).__name__, 502)
         return JSONResponse({"ok": True})
@@ -1301,8 +1301,9 @@ async def printer_file(request: Request):
     if request.query_params.get("download") == "1":
         headers["Content-Disposition"] = f'attachment; filename="{name}"'
     ctype = "text/plain; charset=utf-8" if root != "gcodes" or request.query_params.get("download") != "1" else "application/octet-stream"
-    if name.lower().endswith(THEME_IMG) and request.query_params.get("download") != "1":
-        ctype = mimetypes.guess_type(name)[0] or ctype
+    guess = mimetypes.guess_type(name)[0] or ""
+    if request.query_params.get("download") != "1" and (name.lower().endswith(THEME_IMG) or guess.startswith(("image/", "video/"))):
+        ctype = guess or ctype
     return StreamingResponse(relay(), media_type=ctype, headers=headers)
 
 
@@ -1330,22 +1331,35 @@ async def upload_file(request: Request):
     name = request.query_params.get("name", "").replace("\\", "/").split("/")[-1].strip()
     if not name or not name.lower().endswith(GCODE_EXT if root == "gcodes" else CONFIG_EXT) or '"' in name:
         return err("pick a .gcode file" if root == "gcodes" else f"pick a config file ({' '.join(CONFIG_EXT)})")
-    data = bytearray()
-    async for chunk in request.stream():
-        data += chunk
-        if len(data) > MAX_UPLOAD:
-            return err("file is too big (1 GB max)", 413)
-    if not data:
+    folder = request.query_params.get("dir", "").strip().strip("/")
+    if ".." in folder.split("/"):
+        return err("bad folder")
+    start = root == "gcodes" and request.query_params.get("print") == "1"
+    try:
+        size = int(request.headers.get("content-length") or -1)
+    except ValueError:
+        size = -1
+    if size > MAX_UPLOAD:
+        return err("file is too big (1 GB max)", 413)
+    if size == 0:
         return err("the file is empty")
     try:
-        folder = request.query_params.get("dir", "").strip().strip("/")
-        if ".." in folder.split("/"):
-            return err("bad folder")
-        await client.upload(name, bytes(data), start=root == "gcodes" and request.query_params.get("print") == "1",
-                            root=root, folder=folder)
+        if size > 0 and hasattr(client, "upload_stream"):
+            res = await client.upload_stream(name, request.stream(), size, start=start, root=root, folder=folder)
+        else:
+            data = bytearray()
+            async for chunk in request.stream():
+                data += chunk
+                if len(data) > MAX_UPLOAD:
+                    return err("file is too big (1 GB max)", 413)
+            if not data:
+                return err("the file is empty")
+            res = await client.upload(name, bytes(data), start=start, root=root, folder=folder)
     except Exception as ex:
         return err(str(ex) or type(ex).__name__, 502)
-    return JSONResponse({"ok": True, "name": name})
+    res = res if isinstance(res, dict) else {}
+    return JSONResponse({"ok": True, "name": name, "print_started": res.get("print_started"),
+                         "print_queued": res.get("print_queued")})
 
 
 async def history(request: Request):
@@ -1574,7 +1588,7 @@ SETUP = {
     "notify": ("PB_NOTIFY", ("basic", "advanced")),
     "remote": ("PB_REMOTE", ("off", "on")),
 }
-BUILT = {"ui.advanced", "ai.off", "ai.basic", "ai.heavy", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "remote.on"}
+BUILT = {"ui.advanced", "ai.off", "ai.lite", "ai.basic", "ai.heavy", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "remote.on"}
 
 
 def setup() -> dict:

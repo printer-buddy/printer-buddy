@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / "printer-buddy.env"
 STATE = ROOT / "data" / "parts"
 UPDATER = ROOT / "app" / "core" / "updater.py"
-UPDATES_URL = "https://github.com/printer-buddy/printer-buddy/releases/download/updates/updates.txt"
+RELEASES_URL = "https://api.github.com/repos/printer-buddy/printer-buddy/releases?per_page=100&page={}"
 # part -> (env var holding its tier, tiers, file or folder it installs)
 PARTS = {
     "ui": ("PB_UI", ("advanced",), ROOT / "ui"),
@@ -75,17 +76,37 @@ def _cached(key: str, ttl: float, fn):
 
 
 def latest() -> dict:
-    """updates.txt: {(part, channel or tier): version, ("needs", tag): [(component, min version)]}."""
+    """From the core repo's releases: {(part, channel or tier): version, ("needs", tag): [(component, min version)]}."""
     def fetch():
-        req = urllib.request.Request(UPDATES_URL, headers={"User-Agent": "printer-buddy", "Cache-Control": "no-cache"})
-        text = urllib.request.urlopen(req, timeout=15).read().decode()
-        out = {}
-        for line in text.splitlines():
-            bits = line.split()
-            if len(bits) == 4 and bits[0] == "needs":
-                out.setdefault(("needs", bits[1]), []).append((bits[2], bits[3]))
-            elif len(bits) == 3 and not line.startswith("#"):
-                out[(bits[0], bits[1])] = bits[2]
+        rels = []
+        for page in (1, 2, 3):
+            req = urllib.request.Request(RELEASES_URL.format(page), headers={"User-Agent": "printer-buddy", "Accept": "application/vnd.github+json"})
+            got = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+            rels += got
+            if len(got) < 100:
+                break
+        best = {}
+        for r in rels:
+            tag = r.get("tag_name") or ""
+            if r.get("draft"):
+                continue
+            if m := re.fullmatch(r"ai-([a-z]+)-(v[\d.]+)", tag):
+                key, ver = ("ai", m[1]), m[2]
+            elif m := re.fullmatch(r"([a-z]+)-nightly", tag):
+                key, ver = (m[1], "nightly"), (r.get("published_at") or "")[:10]
+            elif m := re.fullmatch(r"([a-z]+)-(v[\d.]+)", tag):
+                key, ver = (m[1], "stable"), m[2]
+            else:
+                continue
+            rank = ([int(x) for x in re.findall(r"\d+", ver)], r.get("published_at") or "")
+            if key not in best or rank > best[key][0]:
+                best[key] = (rank, ver, tag, r.get("body") or "")
+        out = {key: ver for key, (_, ver, _, _) in best.items()}
+        for _, _, tag, body in best.values():
+            need = next((ln.split(":", 1)[1] for ln in body.splitlines() if ln.lower().startswith("needs:")), "")
+            for item in need.split(","):
+                if len(bits := item.split()) == 2:
+                    out.setdefault(("needs", tag), []).append((bits[0], bits[1]))
         return out
     return _cached("updates", 600, fetch) or {}
 

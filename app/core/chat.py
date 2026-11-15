@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import re
 import time
 import zlib
@@ -36,10 +37,12 @@ def _clean(s, limit: int) -> str:
     return _SPACE.sub(" ", str(s or "")).strip()[:limit]
 
 
-def _tokens(s) -> tuple[list[str], str]:
-    """Letters only, after undoing accents and look-alikes: the words, and the whole text run together."""
+def _tokens(s, leet: bool = True) -> tuple[list[str], str]:
+    """Letters only, after undoing accents (and look-alikes unless leet is False): the words, and the whole text run together."""
     s = unicodedata.normalize("NFKD", str(s or ""))
-    s = "".join(c for c in s if not unicodedata.combining(c)).lower().translate(LEET)
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    if leet:
+        s = s.translate(LEET)
     raw = re.findall(r"[a-z]+", s)
     words, run = [], []
     for t in raw:
@@ -105,19 +108,20 @@ class Blocklist:
         terms = self._terms + (self._builtin() if self.builtin is None or self.builtin() else [])
         if not terms:
             return False
-        words, joined = _tokens(text)
-        for term, tw, mode in terms:
-            if mode == "any":
-                if term in joined:
+        # twice: with look-alikes undone, and with every non-letter as a gap (so "word!" isn't read as "wordi")
+        for words, joined in (_tokens(text), _tokens(text, leet=False)):
+            for term, tw, mode in terms:
+                if mode == "any":
+                    if term in joined:
+                        return True
+                elif mode == "start":
+                    if any(w.startswith(term) for w in words):
+                        return True
+                elif mode == "end":
+                    if any(w.endswith(term) for w in words):
+                        return True
+                elif any(words[i:i + len(tw)] == tw for i in range(len(words) - len(tw) + 1)):
                     return True
-            elif mode == "start":
-                if any(w.startswith(term) for w in words):
-                    return True
-            elif mode == "end":
-                if any(w.endswith(term) for w in words):
-                    return True
-            elif any(words[i:i + len(tw)] == tw for i in range(len(words) - len(tw) + 1)):
-                return True
         return False
 
     def text(self) -> str:
@@ -160,7 +164,7 @@ class Chat:
     def _wait(self, pid: int, cid, now: float):
         left = self.cool.get((pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40]), 0.0) - now
         if left > 0:
-            raise ValueError(f"Wait {int(left) + 1} seconds before trying again.")
+            raise ValueError(f"Wait {math.ceil(left)} seconds before trying again.")
 
     def post(self, pid: int, name: str, text: str, cid: str = "", owner: bool = False) -> dict:
         text = _clean(text, MAX_TEXT)

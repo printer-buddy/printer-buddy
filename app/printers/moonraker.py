@@ -305,6 +305,9 @@ class MoonrakerClient:
             objects["printer_notices"] = None
         if "box" in names:   # Creality K2 CFS
             objects["box"] = None
+        for n in names:   # AFC (Box Turtle, Night Owl…): the AFC object, its units and its lanes
+            if n == "AFC" or n.startswith("AFC_"):
+                objects[n] = None
         if "beacon" in names:
             objects["beacon"] = None
         # per-nozzle filament info and a purifier/top-cover accessory (seen on the Snapmaker U1)
@@ -687,6 +690,8 @@ class MoonrakerClient:
     def mmu_view(self) -> dict | None:
         m = self.status.get("mmu")
         if not m:
+            if isinstance(self.status.get("AFC"), dict):
+                return self.afc_view()
             return self.cfs_view() if isinstance(self.status.get("box"), dict) else None
         mm = self.status.get("mmu_machine") or {}
 
@@ -715,6 +720,51 @@ class MoonrakerClient:
         return {"enabled": m.get("enabled", True), "gate": m.get("gate"), "tool": m.get("tool"),
                 "loaded": m.get("filament") == "Loaded", "action": m.get("action"), "bypass": bool(m.get("has_bypass")),
                 "units": units, "gates": gates}
+
+    def afc_view(self) -> dict | None:
+        # AFC: each unit (e.g. "Box_Turtle Turtle_1") lists its lanes; a lane is "AFC_stepper <name>" or "AFC_lane <name>"
+        a = self.status.get("AFC") or {}
+        lower = {k.lower(): k for k in self.status}
+
+        def lane(n):
+            return self.status.get(f"AFC_stepper {n}") or self.status.get(f"AFC_lane {n}") or {}
+
+        def color(c):
+            c = str(c or "").strip().lstrip("#")
+            return "#" + c[:6].lower() if re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", c) else None
+
+        cur = a.get("current_load") or a.get("current_lane")
+        units, gates, gate, seen = [], [], -1, set()
+
+        def add(names):
+            nonlocal gate
+            for n in names:
+                o = lane(n)
+                w, full = o.get("weight"), o.get("initial_weight") or 1000
+                gates.append({"status": 1 if o.get("prep") or o.get("load") else 0, "material": o.get("material") or "",
+                              "color": color(o.get("color")), "name": o.get("filament_name") or "", "label": str(n),
+                              "temp": o.get("extruder_temp"),
+                              "remaining": max(0, min(100, round(w / full * 100))) if isinstance(w, (int, float)) and full else None})
+                if n == cur:
+                    gate = len(gates) - 1
+                seen.add(n)
+
+        for u in a.get("units") or []:
+            kind, _, name = str(u).partition(" ")
+            info = self.status.get(lower.get(f"afc_{kind} {name}".lower(), ""), {})
+            first = len(gates)
+            add([n for n in info.get("lanes") or [] if n not in seen])
+            units.append({"name": (name or kind).replace("_", " "), "first": first, "count": len(gates) - first,
+                          "temp": None, "humidity": None})
+        rest = [n for n in a.get("lanes") or [] if n not in seen]
+        if rest:
+            first = len(gates)
+            add(rest)
+            units.append({"name": "AFC", "first": first, "count": len(rest), "temp": None, "humidity": None})
+        if not gates:
+            return None
+        return {"enabled": True, "gate": gate, "tool": None, "loaded": bool(cur), "action": a.get("current_state"),
+                "bypass": bool(a.get("bypass_state")), "units": units, "gates": gates, "afc": True}
 
     def cfs_view(self) -> dict | None:
         # Creality K2 CFS: units T1-T4 with slots A-D, shown in the same shape as an MMU (read only, no load / unload commands)

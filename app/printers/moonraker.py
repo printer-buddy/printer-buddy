@@ -10,7 +10,7 @@ from typing import Callable
 
 import uuid
 
-from ..core.net import HandshakeError, WebSocket, get_json, http_get, http_post, http_stream
+from ..core.net import HandshakeError, WebSocket, get_json, http_get, http_post, http_post_stream, http_stream
 
 log = logging.getLogger(__name__)
 VERSION = "0.1.0"
@@ -99,6 +99,7 @@ class MoonrakerClient:
         self.klippy_message: str | None = None
         self.moonraker_warnings: list[str] = []
         self.failed_components: list[str] = []
+        self.components: list[str] = []
         self.status: dict = {}
         self.webcams: list[dict] = []
         self.extras: list[str] = []
@@ -108,6 +109,7 @@ class MoonrakerClient:
         self.max_z_accel = 100.0
         self.limits_default: dict = {}
         self.multi_steppers: list[str] = []
+        self.steppers: list[str] = []
         self.pa_config = {"pressure_advance": 0.0, "smooth_time": 0.04}
         self.has_materials = False
         self.has_purifier = False
@@ -181,7 +183,8 @@ class MoonrakerClient:
             info = await self._call("server.info")
             self._set(connection="online", error=None, klippy_state=info.get("klippy_state"),
                       moonraker_warnings=[str(w) for w in info.get("warnings") or []],
-                      failed_components=[str(c) for c in info.get("failed_components") or []])
+                      failed_components=[str(c) for c in info.get("failed_components") or []],
+                      components=[str(c) for c in info.get("components") or []])
             await self._load_webcams()
             if info.get("klippy_state") == "ready":
                 await self._subscribe()
@@ -287,7 +290,8 @@ class MoonrakerClient:
     async def _load_server_notes(self):
         info = await self._call("server.info")
         self._set(moonraker_warnings=[str(w) for w in info.get("warnings") or []],
-                  failed_components=[str(c) for c in info.get("failed_components") or []])
+                  failed_components=[str(c) for c in info.get("failed_components") or []],
+                  components=[str(c) for c in info.get("components") or []])
 
     async def _subscribe(self):
         objects = dict(SUBSCRIBE)
@@ -359,13 +363,14 @@ class MoonrakerClient:
             pr = cfg.get("printer") or {}
             self.beacon_models = [k[len("beacon model "):] for k in cfg if k.startswith("beacon model ")] if "beacon" in cfg else None
             self.force_move = bool((cfg.get("force_move") or {}).get("enable_force_move")) and pr.get("kinematics") not in ("delta", "polar", "rotary_delta", "winch")
-            self.max_z_accel = float(pr.get("max_z_accel") or 100)
             ma = float(pr.get("max_accel") or 100)
+            self.max_z_accel = float(pr.get("max_z_accel") or ma)
             self.limits_default = {"max_velocity": float(pr.get("max_velocity") or 100), "max_accel": ma,
                                    "square_corner_velocity": float(pr.get("square_corner_velocity") or 5),
                                    "minimum_cruise_ratio": float(pr.get("minimum_cruise_ratio") or 0.5),
                                    "max_accel_to_decel": float(pr.get("max_accel_to_decel") or ma / 2)}
             self.multi_steppers = [a for a in "xyz" if f"stepper_{a}1" in cfg]
+            self.steppers = sorted(k for k in cfg if k.startswith("stepper_"))
             ex = cfg.get("extruder") or {}
             self.pa_config = {"pressure_advance": float(ex.get("pressure_advance") or 0), "smooth_time": float(ex.get("pressure_advance_smooth_time") or 0.04)}
         except (RPCError, asyncio.TimeoutError, ValueError, TypeError):
@@ -451,19 +456,52 @@ class MoonrakerClient:
     async def delete_file(self, path: str):
         return await self._call("server.files.delete_file", {"path": f"gcodes/{path}"})
 
-    async def upload(self, filename: str, data: bytes, start: bool = False, root: str = "gcodes", folder: str = ""):
+    def _upload_parts(self, filename: str, start: bool, root: str, folder: str) -> tuple[bytes, bytes, dict]:
         boundary = uuid.uuid4().hex
         parts = [("root", root)] + ([("path", folder)] if folder else []) + ([("print", "true")] if start else [])
-        body = b"".join(
+        head = b"".join(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in parts)
-        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-                 f'Content-Type: application/octet-stream\r\n\r\n').encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        head += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                 f'Content-Type: application/octet-stream\r\n\r\n').encode()
         headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
         if self.api_key:
             headers["X-Api-Key"] = self.api_key
-        status, _, resp = await http_post(f"http://{self.host}:{self.port}/server/files/upload", body, headers)
+        return head, f"\r\n--{boundary}--\r\n".encode(), headers
+
+    @staticmethod
+    def _upload_result(status: int, resp: bytes) -> dict:
         if status not in (200, 201):
             raise RuntimeError(f"upload failed (HTTP {status}): {resp[:200].decode(errors='replace')}")
+        try:
+            r = json.loads(resp)
+            return r.get("result", r) if isinstance(r, dict) else {}
+        except ValueError:
+            return {}
+
+    async def upload(self, filename: str, data: bytes, start: bool = False, root: str = "gcodes", folder: str = "") -> dict:
+        head, tail, headers = self._upload_parts(filename, start, root, folder)
+        status, _, resp = await http_post(f"http://{self.host}:{self.port}/server/files/upload", head + data + tail, headers)
+        return self._upload_result(status, resp)
+
+    async def upload_stream(self, filename: str, chunks, size: int, start: bool = False, root: str = "gcodes",
+                            folder: str = "") -> dict:
+        """Like upload(), but passes the file through in pieces instead of holding it all in memory."""
+        head, tail, headers = self._upload_parts(filename, start, root, folder)
+
+        async def body():
+            yield head
+            sent = 0
+            async for chunk in chunks:
+                chunk = chunk[:size - sent]
+                sent += len(chunk)
+                if chunk:
+                    yield chunk
+            if sent != size:
+                raise RuntimeError("the upload ended early")
+            yield tail
+        status, _, resp = await http_post_stream(f"http://{self.host}:{self.port}/server/files/upload", body(),
+                                                 len(head) + size + len(tail), headers)
+        return self._upload_result(status, resp)
 
     async def history(self, start: int = 0, limit: int = 30) -> dict:
         res = await self._call("server.history.list", {"start": start, "limit": limit, "order": "desc"})
@@ -615,6 +653,7 @@ class MoonrakerClient:
             "save_pending": bool(live and s.get("configfile", {}).get("save_config_pending")),
             "save_pending_items": (s.get("configfile", {}).get("save_config_pending_items") or {}) if live else {},
             "failed_components": self.failed_components,
+            "components": self.components,
             "state": state,
             "idle_state": (s.get("idle_timeout") or {}).get("state") if live else None,
             "filename": ps.get("filename") or None,
@@ -630,6 +669,7 @@ class MoonrakerClient:
             "limits_default": self.limits_default,
             "max_accel": s.get("toolhead", {}).get("max_accel"),
             "multi_steppers": self.multi_steppers,
+            "steppers": self.steppers,
             "pa_config": self.pa_config,
             "slicer_eta": max(0.0, meta["estimated_time"] - duration) if state == "printing" and duration > 0 and meta.get("estimated_time") else None,
             "file_eta": (duration / vs["progress"] - duration) if state == "printing" and duration > 0 and (vs.get("progress") or 0) > 0.01 else None,
@@ -724,7 +764,6 @@ class MoonrakerClient:
     def afc_view(self) -> dict | None:
         # AFC: each unit (e.g. "Box_Turtle Turtle_1") lists its lanes; a lane is "AFC_stepper <name>" or "AFC_lane <name>"
         a = self.status.get("AFC") or {}
-        lower = {k.lower(): k for k in self.status}
 
         def lane(n):
             return self.status.get(f"AFC_stepper {n}") or self.status.get(f"AFC_lane {n}") or {}
@@ -733,7 +772,7 @@ class MoonrakerClient:
             c = str(c or "").strip().lstrip("#")
             return "#" + c[:6].lower() if re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", c) else None
 
-        cur = a.get("current_load") or a.get("current_lane")
+        cur = a.get("current_load")
         units, gates, gate, seen = [], [], -1, set()
 
         def add(names):
@@ -751,7 +790,8 @@ class MoonrakerClient:
 
         for u in a.get("units") or []:
             kind, _, name = str(u).partition(" ")
-            info = self.status.get(lower.get(f"afc_{kind} {name}".lower(), ""), {})
+            info = next((v for k, v in self.status.items() if k.startswith("AFC_") and k.partition(" ")[2] == name
+                         and isinstance(v, dict) and isinstance(v.get("lanes"), list) and "hubs" in v), {})
             first = len(gates)
             add([n for n in info.get("lanes") or [] if n not in seen])
             units.append({"name": (name or kind).replace("_", " "), "first": first, "count": len(gates) - first,
@@ -770,19 +810,23 @@ class MoonrakerClient:
         # Creality K2 CFS: units T1-T4 with slots A-D, shown in the same shape as an MMU (read only, no load / unload commands)
         b = self.status.get("box") or {}
         names = {}
-        for e in b.get("same_material") or []:
+        for e in (b.get("same_material") or []) + (b.get("diff_material") or []):
             if isinstance(e, list) and len(e) > 3 and isinstance(e[2], list):
                 for slot in e[2]:
-                    names[str(slot).strip()] = str(e[3] or "").strip()
+                    names.setdefault(str(slot).strip().upper(), str(e[3] or "").strip())
 
         def item(v, i):
             return v[i] if isinstance(v, list) and i < len(v) else None
 
         def color(v):
-            c = str(v or "").strip().lstrip("#")
+            c = re.sub(r"[^0-9a-fA-F]", "", str(v or "").strip().lstrip("#"))
             if len(c) == 7 and c[0] == "0":
                 c = c[1:]
-            return "#" + c.lower() if re.fullmatch(r"[0-9a-fA-F]{6}", c) else None
+            elif len(c) == 8:
+                c = c[:6]
+            elif len(c) == 3:
+                c = "".join(ch * 2 for ch in c)
+            return "#" + c.lower() if len(c) == 6 else None
 
         def num(v):
             try:
@@ -796,10 +840,12 @@ class MoonrakerClient:
             if not isinstance(u, dict) or str(u.get("state") or "").lower() != "connect":
                 continue
             first, active = len(gates), str(u.get("filament") or "").strip().upper()
+            sensor = num(u.get("material_sensor"))
             for j, letter in enumerate("ABCD"):
                 slot, code = t + letter, str(item(u.get("material_type"), j) or "").strip()
                 c, material = color(item(u.get("color_value"), j)), names.get(t + letter) or ("" if code in ("", "-1") else code)
-                gates.append({"status": 1 if material or c else 0, "material": material, "color": c, "name": "", "label": slot,
+                loaded = bool(int(sensor) & (1 << j)) if sensor is not None else bool(material or c)
+                gates.append({"status": 1 if loaded else 0, "material": material, "color": c, "name": "", "label": slot,
                               "temp": None, "remaining": None})
                 if active in (letter, slot):
                     gate = first + j
@@ -906,9 +952,21 @@ class MoonrakerClient:
             return None
         c = self.status.get("print_task_config") or {}
         vendors, colors = c.get("filament_vendor") or [], c.get("filament_color_rgba") or []
-        return [{"index": i, "vendor": v if v not in ("", "NONE") else None,
-                 "color": f"#{colors[i][:6]}" if i < len(colors) and len(colors[i]) >= 6 else None}
-                for i, v in enumerate(vendors)]
+        types, subs, exist = c.get("filament_type") or [], c.get("filament_sub_type") or [], c.get("filament_exist")
+
+        def val(lst, i):
+            v = lst[i] if i < len(lst) else None
+            return v if v not in (None, "", "NONE") else None
+
+        out = []
+        for i in range(len(vendors)):
+            if isinstance(exist, list) and not (i < len(exist) and exist[i]):
+                out.append({"index": i, "vendor": None, "type": None, "color": None})
+                continue
+            kind = " ".join(x for x in (val(types, i), val(subs, i)) if x) or None
+            out.append({"index": i, "vendor": val(vendors, i), "type": kind,
+                        "color": f"#{colors[i][:6]}" if i < len(colors) and len(colors[i]) >= 6 else None})
+        return out
 
     def purifier(self) -> dict | None:
         """A Top Cover / purifier accessory some printers report (seen on the Snapmaker U1, unverified elsewhere)."""
@@ -935,6 +993,12 @@ class MoonrakerClient:
                                           json.dumps(body).encode(), {"content-type": "application/json"})
         if status != 200:
             raise RPCError(f"purifier control failed: HTTP {status}")
+        try:
+            result = json.loads(data).get("result") or {}
+        except (ValueError, AttributeError):
+            result = {}
+        if isinstance(result, dict) and result.get("state") == "error":
+            raise RPCError(f"purifier control failed: {result.get('message') or 'error'}")
 
     def bed_area(self) -> list | None:
         th = self.status.get("toolhead", {})

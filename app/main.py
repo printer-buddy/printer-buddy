@@ -733,6 +733,10 @@ async def components_list(request: Request):
 
 async def components_action(request: Request):
     """POST {update: core|parts|ai} | {channel} | {part, tier} | {part, dev} | {ai: kind}. Settings changes re-fetch, then restart."""
+    # every change here restarts Printer Buddy (or the camera streamer), which would lose a timelapse being recorded
+    busy = [v["name"] for v in manager.views() if v.get("state") in ("printing", "paused")]
+    if busy:
+        return err(f"{', '.join(busy)} {'are' if len(busy) > 1 else 'is'} printing: wait until the print ends", 409)
     b = await body(request)
     what = b.get("update")
     if "channel" in b:

@@ -177,6 +177,8 @@ async def add_bridged(b: dict, host: str, bam: dict | None, ele: dict | None):
     extra = {"serial": serial, "access_code": code, "camera": "auto"}
     if kind == "elegoo":
         extra.update(brand="elegoo", model=model)
+        if model == "cc1" and ele.get("extra_commands") is True:
+            extra["extra_commands"] = True   # OpenCentauri patched firmware: temperatures, fans, light and speed
     row = manager.add(name, host, port, None, kind, extra)
     client = manager.clients[row["id"]]
     for _ in range(30):

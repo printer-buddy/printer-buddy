@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="Printer Buddy" width="220"></p>
+
 # Printer Buddy (Lite, remote mode)
 
 A self-hosted printer monitor for Klipper printers. Run it on a Pi, a NAS, a home server or on a printer itself,
@@ -84,6 +86,10 @@ Each folder has a README.txt saying what's in it.
 `POST /api/notify/test`
 
 ## Licenses
+
+### Printer Buddy
+
+Copyright (C) 2026 sterling motuz. Licensed under the GNU Affero General Public License v3.0 only (AGPL-3.0-only), with extra terms: keep the licence header in each file, and include a CHANGELOG of any changes. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The Printer Buddy name and logo are not covered by the licence.
 
 ### Bundled libraries (`ui/vendor/`)
 

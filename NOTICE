@@ -1,0 +1,48 @@
+Printer Buddy
+Copyright (C) 2026  sterling motuz <Sterling@dexabyte.ca>
+https://github.com/printer-buddy/printer-buddy
+
+Licensed under the GNU Affero General Public License, version 3 only
+(AGPL-3.0-only); the full text is in the LICENSE file.
+
+Additional terms under AGPL-3.0 section 7:
+
+  7b (keep author credit): keep the licence header at the top of each file.
+
+  7c (mark changed versions): if you make any changes, you must include a
+  CHANGELOG with all changes and their dates.
+
+Not covered by this licence:
+
+  bambu-convert/bambu_convert/hms.py and hms_en.json.gz: the HMS message table
+    is from greghesp/ha-bambulab (MIT License, notice kept in hms.py).
+
+How we read this licence
+------------------------
+
+1. Credit when a file has changed a lot
+   If your version of a file has changed so much that little of Printer
+   Buddy's original is left, you may replace the header's credit with:
+     Original idea inspired by Printer Buddy (https://github.com/printer-buddy/printer-buddy)
+   Everything else still applies: AGPL-3.0-only, and a CHANGELOG of your changes.
+
+2. Printer Buddy AI models
+   You may use the Printer Buddy AI models (such as printer-buddy-lite.npz
+   and model.json) in your own, separate projects. You must give credit:
+     AI model provided by Printer Buddy (https://github.com/printer-buddy/printer-buddy)
+   If you change a model (for example retrain or convert it), point 1
+   applies: once little of the original is left, you may credit it as
+   "Original idea inspired by Printer Buddy" with the link instead.
+
+3. Contributors
+   If you have contributed to any Printer Buddy project and want your work
+   removed, contact Sterling@dexabyte.ca.
+
+Name and logo
+-------------
+
+The Printer Buddy name and logo (including the mascot) are not covered by
+this licence. You may not use them for your own project, or in a way that
+suggests your project is Printer Buddy or is made by us, without written
+permission from Sterling@dexabyte.ca. Saying where something came from, as
+the credit lines above ask, is fine.

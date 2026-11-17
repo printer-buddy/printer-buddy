@@ -1,0 +1,134 @@
+#LICENSE
+#
+#Copyright (C) 2026  sterling motuz <Sterling@dexabyte.ca>
+#
+#for https://github.com/printer-buddy/printer-buddy
+#
+#SPDX-License-Identifier: AGPL-3.0-only
+#
+#Additional term (AGPL-3.0 section 7b, keep author credit): keep this header
+#
+#Additional term (AGPL-3.0 section 7c, mark changed versions): if you make any changes, you must include a CHANGELOG with all changes and their dates
+# Release everything at once: starts each ticked repo's own release.yml (stable, from nightly),
+# waits for them all and lists the results in the run summary. Needs the RELEASE_ALL_TOKEN secret
+# (Actions: read and write on the part repos); core uses this repo's own token.
+name: release all
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Set every ticked part to this version, like 1.6.1. Parts that already have it or are past it are skipped. Run \"current versions\" first to see the highest. Leave blank to use bump."
+        required: false
+        default: ""
+      bump:
+        description: "When the version is blank, raise each part's last version by"
+        type: choice
+        options:
+          - "x.x.0 -> x.x.1"
+          - "x.0.0 -> x.1.0"
+          - "0.0.0 -> 1.0.0"
+        default: "x.x.0 -> x.x.1"
+      test:
+        description: "Test run: every part does everything except publish"
+        type: boolean
+        default: false
+      core:
+        description: "Printer Buddy (core)"
+        type: boolean
+        default: true
+      ui:
+        description: "Interface (UI)"
+        type: boolean
+        default: true
+      timelapse:
+        description: "Timelapse"
+        type: boolean
+        default: true
+      notify:
+        description: "Notifications"
+        type: boolean
+        default: true
+      streamer:
+        description: "Camera streamer"
+        type: boolean
+        default: true
+      soloai:
+        description: "Solo AI (solo-print-buddy-ai)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency: release-all
+
+jobs:
+  release:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: core, repo: printer-buddy/printer-buddy, kind: false }
+          - { name: ui, repo: printer-buddy/print-buddy-ui, kind: true }
+          - { name: timelapse, repo: printer-buddy/print-buddy-timelapse, kind: true }
+          - { name: notify, repo: printer-buddy/print-buddy-notify, kind: true }
+          - { name: streamer, repo: printer-buddy/print-buddy-streamer, kind: true }
+          - { name: soloai, repo: printer-buddy/solo-print-buddy-ai, kind: true }
+    env:
+      GH_TOKEN: ${{ matrix.name == 'core' && github.token || secrets.RELEASE_ALL_TOKEN }}
+      REPO: ${{ matrix.repo }}
+      NAME: ${{ matrix.name }}
+      KIND: ${{ matrix.kind }}
+      BUMP: ${{ inputs.bump }}
+      TEST: ${{ inputs.test }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Skipped
+        if: ${{ !inputs[matrix.name] }}
+        run: |
+          echo "**$NAME**: skipped" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release ${{ matrix.name }}
+        if: ${{ inputs[matrix.name] }}
+        run: |
+          set -euo pipefail
+          last() { gh run list --repo "$REPO" --workflow release.yml --event workflow_dispatch -L 1 --json databaseId -q '.[0].databaseId // 0'; }
+          args=(-f bump="$BUMP" -f test="$TEST")
+          [ "$KIND" = true ] && args+=(-f kind=stable)
+          if [ -n "$VERSION" ]; then
+            # flat version: each release treats a version it already has as "roll main back to it", so never send one that exists or is lower
+            V="${VERSION#v}"
+            echo "$V" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::version must look like 1.6.1"; exit 1; }
+            pre=v; [ "$NAME" = core ] && pre=core-v
+            have=$(gh api "repos/$REPO/tags?per_page=100" --paginate --jq '.[].name' | grep "^$pre[0-9]" | sed "s/^$pre//" || true)
+            newest=$(printf '%s\n' $have | sort -V | tail -1)
+            if printf '%s\n' $have | grep -qx "$V"; then
+              echo "**$NAME**: already has $V, skipped" >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            if [ -n "$newest" ] && [ "$(printf '%s\n%s\n' "$newest" "$V" | sort -V | tail -1)" = "$newest" ]; then
+              echo "**$NAME**: already at $newest, past $V, skipped" >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            args+=(-f version="$V")
+          fi
+          before=$(last)
+          gh workflow run release.yml --repo "$REPO" --ref nightly "${args[@]}"
+          id=$before
+          for i in $(seq 1 36); do
+            sleep 5
+            id=$(last)
+            [ "$id" != "$before" ] && [ "$id" != 0 ] && break
+          done
+          if [ "$id" = "$before" ] || [ "$id" = 0 ]; then
+            echo "**$NAME**: didn't start" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$REPO: the release run didn't start"
+            exit 1
+          fi
+          url=$(gh run view "$id" --repo "$REPO" --json url -q .url)
+          echo "$REPO release: $url"
+          if gh run watch "$id" --repo "$REPO" --exit-status --interval 20 > /dev/null; then res=done; else res=failed; fi
+          echo "**$NAME**: $res, [see the run]($url)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$res" = done ]

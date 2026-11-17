@@ -1,3 +1,14 @@
+#LICENSE
+#
+#Copyright (C) 2026  sterling motuz <Sterling@dexabyte.ca>
+#
+#for https://github.com/printer-buddy/printer-buddy
+#
+#SPDX-License-Identifier: AGPL-3.0-only
+#
+#Additional term (AGPL-3.0 section 7b, keep author credit): keep this header
+#
+#Additional term (AGPL-3.0 section 7c, mark changed versions): if you make any changes, you must include a CHANGELOG with all changes and their dates
 from __future__ import annotations
 
 import asyncio
@@ -5,6 +16,7 @@ import re
 import itertools
 import json
 import logging
+import math
 import time
 from typing import Callable
 
@@ -25,7 +37,7 @@ SUBSCRIBE = {
     "virtual_sdcard": ["progress", "is_active", "file_position", "file_size"],
     "webhooks": ["state", "state_message"],
     "configfile": ["warnings", "save_config_pending", "save_config_pending_items"],
-    "gcode_move": ["speed_factor", "extrude_factor", "homing_origin"],
+    "gcode_move": ["speed_factor", "extrude_factor", "homing_origin", "gcode_position"],
     "toolhead": ["homed_axes", "position", "axis_minimum", "axis_maximum", "extruder",
                  "max_velocity", "max_accel", "square_corner_velocity", "minimum_cruise_ratio", "max_accel_to_decel"],
 }
@@ -396,11 +408,32 @@ class MoonrakerClient:
                                "params": params.get(n.lower()) or params.get(n) or []}
                               for n in names if not n.startswith("_")), key=lambda m: m["name"])
 
+    @staticmethod
+    def _layers(ps: dict, meta: dict, pos, duration: float) -> dict:
+        # Klipper only knows the layer if the file calls SET_PRINT_STATS_INFO. Without it, work it out like
+        # Fluidd does (store/printer/getters.ts getPrintLayer / getPrintLayers): from the nozzle height and the file's layer heights.
+        info = ps.get("info") or {}
+        layer, total, from_z = info.get("current_layer"), info.get("total_layer"), False
+        flh, lh = meta.get("first_layer_height"), meta.get("layer_height")
+        if not isinstance(layer, (int, float)):
+            layer = None
+            if duration > 0 and flh is not None and lh and pos and len(pos) >= 3:
+                n = math.ceil((pos[2] - flh) / lh + 1)
+                if n > 0:
+                    layer, from_z = n, True
+        if not isinstance(total, (int, float)):
+            total = meta.get("layer_count")
+            if total is None and flh is not None and lh and meta.get("object_height") is not None:
+                n = math.ceil((meta["object_height"] - flh) / lh + 1)
+                total = n if n > 0 else None
+        return {"layer": layer, "total_layers": total, "layer_from_z": from_z}
+
     async def _load_meta(self, fname: str):
         try:
             m = await self._call("server.files.metadata", {"filename": fname}) or {}
             if self._meta_for == fname:
-                self._meta = {k: m.get(k) for k in ("estimated_time", "filament_total")}
+                self._meta = {k: m.get(k) for k in ("estimated_time", "filament_total", "first_layer_height", "layer_height",
+                                                    "layer_count", "object_height")}
         except Exception:
             pass
 
@@ -680,8 +713,7 @@ class MoonrakerClient:
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
             "has_webcam": self.native_camera is not None or self.snapshot_url() is not None,
-            "layer": (ps.get("info") or {}).get("current_layer"),
-            "total_layers": (ps.get("info") or {}).get("total_layer"),
+            **self._layers(ps, meta, s.get("gcode_move", {}).get("gcode_position"), duration),
             "cams": self.cams_info(),
             "speed_factor": s.get("gcode_move", {}).get("speed_factor"),
             "extrude_factor": s.get("gcode_move", {}).get("extrude_factor"),

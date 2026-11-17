@@ -51,7 +51,7 @@ declare -A DESC=(
   [notify.basic]="ntfy / Discord when prints start, pause, finish or fail"
   [notify.advanced]="Basic + more services and progress updates"
   [remote.off]="only on your home network"
-  [remote.on]="reach it from anywhere, with a login"
+  [remote.on]="share links that work from anywhere (one printer's camera and progress, no login)"
   [stream.off]="use the printer's own camera service"
   [stream.light]="USB cameras, MJPEG (mjpg-streamer)"
   [stream.basic]="USB cameras, MJPEG (ustreamer)"
@@ -201,7 +201,8 @@ branch() { git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknow
 # the branch updates follow: the channel's, unless another branch was picked
 core_branch() {
   case "$(branch)" in
-    nightly|builds|main|HEAD|unknown) [ "$(get_env PB_CHANNEL)" = nightly ] && echo nightly || echo main ;;
+    # same rule as app/core/updater.py core_branch(): nightly channel, or core on dev/beta builds (PB_NIGHTLY)
+    nightly|builds|main|HEAD|unknown) if [ "$(get_env PB_CHANNEL)" = nightly ] || [[ ",$(get_env PB_NIGHTLY)," == *",core,"* ]]; then echo nightly; else echo main; fi ;;
     *) branch ;;
   esac
 }
@@ -336,8 +337,18 @@ do_remove() {
   sudo systemctl disable --now -q "$SERVICE"; sudo rm -f "$UNIT_FILE"; sudo systemctl daemon-reload
   echo "Service removed."
   moonraker_service remove
+  local sunit=/etc/systemd/system/printer-buddy-streamer.service
+  if [ -f "$sunit" ] && yesno "Also remove the camera streamer? Cameras it serves will stop."; then
+    sudo systemctl disable --now -q printer-buddy-streamer 2>/dev/null; sudo rm -f "$sunit"; sudo systemctl daemon-reload
+    echo "Camera streamer removed."
+  fi
+  if [ "$(tunnel_state)" != "not set up" ] || [ -n "$(get_env PB_TUNNEL_KEY)" ]; then remove_tunnel; fi
+  # the root helper and its sudo rule only exist for Printer Buddy: don't leave a password-free sudo rule behind
+  sudo rm -f "$HELPER" /etc/sudoers.d/printer-buddy; sudo rmdir "$(dirname "$HELPER")" 2>/dev/null
+  echo "Root helper and its sudo rule removed."
   if [ -d "$DIR/.venv" ] && yesno "Also delete the Python environment (.venv)?"; then rm -rf "$DIR/.venv" && echo "Deleted .venv."; fi
   if [ -d "$DIR/data" ] && yesno "Also delete your printers and settings (data/)? Make a backup first if unsure."; then rm -rf "$DIR/data" && echo "Deleted data/."; fi
+  echo "Kept: system packages Printer Buddy may have installed (ffmpeg, cloudflared, ustreamer, go2rtc), since other programs can use them."
 }
 
 make_backup() {
@@ -432,7 +443,7 @@ auto_tunnel() {
 remove_tunnel() {
   local key; key="$(get_env PB_TUNNEL_KEY)"
   [ "$(tunnel_state)" = "not set up" ] && [ -z "$key" ] && { echo "No tunnel is set up."; return 0; }
-  yesno "Remove the tunnel? Share links will stop working from outside." || { echo "Nothing changed."; return 0; }
+  [ -n "${NOASK:-}" ] || yesno "Remove the tunnel? Share links will stop working from outside." || { echo "Nothing changed."; return 0; }
   [ "$(tunnel_state)" != "not set up" ] && sudo cloudflared service uninstall >/dev/null 2>&1 && echo "Tunnel stopped on this box."
   if [ -n "$key" ]; then
     echo "Removing it from the server..."
@@ -446,9 +457,9 @@ remove_tunnel() {
 sync_tunnel() {
   local key; key="$(get_env PB_TUNNEL_KEY)"
   if [ "$(part_value "${PARTS[4]}")" = on ]; then
-    [ "$(tunnel_state)" = "not set up" ] && { auto_tunnel; pause; }
+    [ "$(tunnel_state)" = "not set up" ] && { auto_tunnel; [ -n "${NOASK:-}" ] || pause; }
   elif [ "$(tunnel_state)" != "not set up" ] || [ -n "$key" ]; then
-    remove_tunnel; pause
+    remove_tunnel; [ -n "${NOASK:-}" ] || pause
   fi
 }
 
@@ -670,4 +681,5 @@ for part in "${PARTS[@]}"; do
     set_env "$var" "$(part_value "$part")"
   fi
 done
-do_install
+# flags or -y: also make the share-link tunnel match --remote, without questions (the menu does this in Install and Change setup)
+do_install && NOASK=1 sync_tunnel

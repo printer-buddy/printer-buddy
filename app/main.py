@@ -734,7 +734,7 @@ async def ai_save(request: Request):
         return err("AI detection isn't running", 409)
     item = await manager.save_for_ai(pid, label)
     if not item:
-        return err("Couldn't get a picture from this printer's camera", 409)
+        return err(getattr(manager.collect, "rejected", None) or "Couldn't get a picture from this printer's camera", 409)
     await manager.collect.send_now()
     item = manager.collect._read(item["id"]) or item
     return JSONResponse({**item, "sharing": manager.collect.sharing(), "error": manager.collect.last_error}, status_code=201)

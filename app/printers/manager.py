@@ -247,6 +247,8 @@ class Manager:
             self.collect.add(pid, row["name"], img, source, status, meta=self._ai_meta(pid))
 
     async def save_for_ai(self, pid: int, label: str) -> dict | None:
+        if self.collect:
+            self.collect.rejected = None
         img = await self.snapshot(pid)
         row = self.rows.get(pid)
         if not img or not row or not self.collect:

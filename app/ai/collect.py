@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 LABELS = ("ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob", "crack")
 PRINT_MARKS = (0.10, 0.50, 0.90)
 KEEP = 500
+MAX_PHOTO = 1_000_000   # bytes; the relay refuses photos over 1 MB
 SEND_EVERY = 60
 
 
@@ -67,6 +68,7 @@ class Collector:
         self._pause_until = 0.0
         self._lock: asyncio.Lock | None = None
         self.last_error: str | None = None
+        self.rejected: str | None = None   # why the last add() didn't keep its photo (too big)
 
     def sharing(self) -> bool:
         return bool(self.store.settings().get("ai_contribute", False))
@@ -127,20 +129,25 @@ class Collector:
     @staticmethod
     def _clean_jpeg(jpeg: bytes) -> bytes:
         from PIL import Image
+        # full size, as the live check sees it (a 640 copy scored spaghetti far lower); re-saving drops the camera's extra data
         im = Image.open(io.BytesIO(jpeg)).convert("RGB")
-        im.thumbnail((640, 640))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=85)
+        if buf.tell() > MAX_PHOTO:
+            # never queued: the relay would refuse it, holding up every photo after it
+            raise ValueError(f"photo is {buf.tell() // 1000} KB, over the {MAX_PHOTO // 1000} KB limit")
         return buf.getvalue()
 
     def add(self, pid: int, printer: str, jpeg: bytes, source: str, status: str,
             label: str | None = None, suggested: str | None = None, meta: dict | None = None) -> dict | None:
+        self.rejected = None
         if not self.enabled() or not jpeg:
             return None
         try:
             data = self._clean_jpeg(jpeg)
         except Exception as e:
-            log.info("collect: bad snapshot from printer %s: %s", pid, e)
+            log.info("collect: photo from printer %s not kept: %s", pid, e)
+            self.rejected = f"Photo not kept: {e}"
             return None
         self.root.mkdir(parents=True, exist_ok=True)
         iid = f"{int(time.time())}-{secrets.token_hex(3)}"

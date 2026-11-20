@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import mimetypes
 import re
@@ -20,6 +21,7 @@ import logging
 import os
 import secrets
 import signal
+import socket
 import time
 import zlib
 from pathlib import Path
@@ -39,6 +41,7 @@ from .core.chat import Blocklist, Chat
 from .core.store import Store
 from .core.bambu import discover_elegoo as bambu_discover
 from .core import components as comp
+from .core.streamer import Streamer, enabled as streamer_enabled
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
 from .ai import detector as ai_mod
@@ -71,6 +74,7 @@ manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "dat
 manager.collect = Collector(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                             lambda: share_user_id(), lambda: manager.ai.model is not None)
 scan_lock = asyncio.Lock()
+streamer = Streamer()
 
 
 def err(msg: str, status: int = 400):
@@ -782,7 +786,13 @@ async def components_action(request: Request):
 
 
 async def system_list(request: Request):
-    return JSONResponse(await asyncio.to_thread(comp.system))
+    data = await asyncio.to_thread(comp.system)
+    if streamer_enabled():
+        up = streamer.running()
+        data["services"].append({"name": "printer-buddy-streamer",
+                                  "active_state": "active" if up else "inactive",
+                                  "sub_state": "running" if up else "dead"})
+    return JSONResponse(data)
 
 
 async def system_action(request: Request):
@@ -792,6 +802,16 @@ async def system_action(request: Request):
     if (action, service) == ("restart", "printer-buddy"):
         asyncio.get_running_loop().call_later(1.5, os.kill, os.getpid(), signal.SIGTERM)
         return JSONResponse({"ok": True, "output": "", "restarting": True})
+    if service == "printer-buddy-streamer":
+        if action == "stop":
+            await streamer.stop()
+        elif action == "start":
+            streamer.start()
+        elif action == "restart":
+            await streamer.restart()
+        else:
+            return err("unknown action")
+        return JSONResponse({"ok": True, "output": "", "restarting": False})
     ok, out = await asyncio.to_thread(comp.system_action, action, service)
     return JSONResponse({"ok": ok, "output": out, "restarting": False})
 
@@ -926,39 +946,6 @@ def _valid_share(request: Request):
 
 SHARE_GONE = "This share link has expired or was turned off."
 chat = Chat(Blocklist(os.path.join(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))), "chat-blocklist.txt"), lambda: store.settings().get("chat_builtin", "on") != "off"))
-CHAT_ALERTS = ("off", "flags", "all")
-_alerted: dict[int, list] = {}
-
-
-def chat_alert_mode() -> str:
-    mode = store.settings().get("chat_alert", "flags")
-    return mode if mode in CHAT_ALERTS else "flags"
-
-
-async def chat_alert(pid: int, msg: dict):
-    """Push a chat message or flag to the owner's phone through the notification settings (ntfy, Discord, ...)."""
-    mode, flag = chat_alert_mode(), msg.get("kind") == "flag"
-    if mode == "off" or (not flag and mode != "all") or not manager.notifier.enabled:
-        return
-    st, now = _alerted.setdefault(pid, [0.0, 0]), time.time()
-    if not flag and now - st[0] < 20:
-        st[1] += 1
-        return
-    name = (manager.rows.get(pid) or {}).get("name") or f"Printer {pid}"
-    text = f"{msg['name']}: {msg['text']}"
-    if flag:
-        title, text = f"Flagged: {name}", f"{msg['name']} wants you to look at the printer" + (f": {msg['text']}" if msg["kind"] == "flag" and msg["text"] != "wants you to look at the printer" else "")
-        image = await manager.snapshot(pid)
-    else:
-        title, image = f"Chat on {name}", None
-        text += f" (+{st[1]} more)" if st[1] else ""
-        st[0], st[1] = now, 0
-    try:
-        await manager.notifier.send(title, text, image)
-    except Exception as e:
-        logging.getLogger(__name__).warning("chat alert: %s", e)
-
-
 def chat_enabled(pid: int) -> bool:
     return pid not in (store.settings().get("chat_off") or [])
 
@@ -985,7 +972,6 @@ async def share_chat(request: Request):
         msg = chat.post(pid, b.get("name"), b.get("text"), b.get("cid"))
     except ValueError as e:
         return err(str(e), 429)
-    asyncio.create_task(chat_alert(pid, msg))
     return JSONResponse({"message": msg}, headers={"Cache-Control": "no-store"})
 
 
@@ -1002,22 +988,17 @@ async def share_flag(request: Request):
         msg = chat.flag(pid, b.get("name"), b.get("note"), b.get("cid"))
     except ValueError as e:
         return err(str(e), 429)
-    asyncio.create_task(chat_alert(pid, msg))
     return JSONResponse({"message": msg}, headers={"Cache-Control": "no-store"})
 
 
 async def chat_settings(request: Request):
     if request.method == "PUT":
         b = await body(request)
-        if "alert" in b:
-            if b["alert"] not in CHAT_ALERTS:
-                return err("alert must be off, flags or all")
-            store.save_settings({"chat_alert": b["alert"]})
         if "blocked" in b:
             chat.block.save(b["blocked"])
         if "builtin" in b:
             store.save_settings({"chat_builtin": "on" if b["builtin"] else "off"})
-    return JSONResponse({"builtin": chat.block.builtin(), "alert": chat_alert_mode(), "blocked": chat.block.text(), "notifications": manager.notifier.enabled})
+    return JSONResponse({"builtin": chat.block.builtin(), "blocked": chat.block.text()})
 
 
 async def printer_chat(request: Request):
@@ -1538,13 +1519,23 @@ async def events(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+NOTIFY_SECRETS = ("ntfy_token", "discord_webhook", "telegram_token", "pushover_token", "smtp_pass")
+HIDDEN = "••••••••"
+
+
 async def get_notify_settings(request: Request):
-    return JSONResponse({**manager.notifier.config(), "all_events": ALL_EVENTS, "progress_steps": PROGRESS_STEPS,
+    c = manager.notifier.config()
+    for k in NOTIFY_SECRETS:
+        c[k] = HIDDEN if c.get(k) else ""
+    return JSONResponse({**c, "all_events": ALL_EVENTS, "progress_steps": PROGRESS_STEPS,
                          "advanced": notify_advanced(), "active": manager.notifier.targets()})
 
 
 async def save_notify_settings(request: Request):
     b = await body(request)
+    for k in NOTIFY_SECRETS:
+        if b.get(k) == HIDDEN:
+            del b[k]
     values = {}
     for k in ("ntfy_url", "ntfy_token", "discord_webhook"):
         if k in b:
@@ -1634,7 +1625,9 @@ async def lifespan(app):
     await asyncio.to_thread(manager.ai.load)
     await manager.start()
     manager.collect.start()
+    streamer.start()
     yield
+    await streamer.stop()
     await manager.collect.stop()
     await manager.ai.stop()
     await manager.stop()
@@ -1653,6 +1646,61 @@ class TunnelGuard:
             if (b"cf-ray" in names or b"cf-connecting-ip" in names) and not scope["path"].startswith("/share/"):
                 await PlainTextResponse("Not found", status_code=404)(scope, receive, send)
                 return
+        await self.inner(scope, receive, send)
+
+
+def _host_name(host: str) -> str:
+    host = host.strip().lower()
+    if host.startswith("["):
+        return host[1:host.find("]")] if "]" in host else host[1:]
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+class SiteGuard:
+    """Refuses requests to a Host this box doesn't answer to, or unsafe methods from another site's Origin. /share/ is exempt."""
+
+    UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+
+    def __init__(self, inner):
+        self.inner = inner
+        names = {"localhost"}
+        for n in (socket.gethostname(), socket.getfqdn()):
+            n = n.strip().lower()
+            if n:
+                names.update({n, n.split(".")[0]})
+        names.update(n.strip().lower() for n in os.getenv("PB_ALLOWED_HOSTS", "").split(",") if n.strip())
+        self.names = names
+
+    def host_ok(self, host: str) -> bool:
+        if not host:
+            return True
+        name = _host_name(host)
+        if name in self.names or name.endswith(".local") or name.endswith(".localhost"):
+            return True
+        try:
+            ipaddress.ip_address(name)
+            return True
+        except ValueError:
+            return False
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope["path"].startswith("/share/"):
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            host = headers.get(b"host", b"").decode("latin-1")
+            if not self.host_ok(host):
+                logging.getLogger(__name__).warning("refused a request for unknown name %r (add it to PB_ALLOWED_HOSTS if it's yours)", _host_name(host))
+                await PlainTextResponse(f"Printer Buddy doesn't answer to the name '{_host_name(host)}'. "
+                                        "If that's your box, add it to PB_ALLOWED_HOSTS in printer-buddy.env "
+                                        "and restart Printer Buddy.", status_code=403)(scope, receive, send)
+                return
+            origin = headers.get(b"origin")
+            if scope["method"] in self.UNSAFE and origin is not None:
+                o = origin.decode("latin-1").strip().lower()
+                if o.split("://", 1)[-1].rstrip("/") != host.strip().lower():
+                    logging.getLogger(__name__).warning("refused a %s to %s sent by a page from %r", scope["method"], scope["path"], o)
+                    await PlainTextResponse("Refused: this request came from another website.",
+                                            status_code=403)(scope, receive, send)
+                    return
         await self.inner(scope, receive, send)
 
 
@@ -1735,4 +1783,4 @@ _app = Starlette(routes=[
     Route("/api/notify/test", test_notification, methods=["POST"]),
     Mount("/static", app=StaticFiles(directory=STATIC), name="static"),
 ], lifespan=lifespan)
-app = TunnelGuard(_app)
+app = TunnelGuard(SiteGuard(_app))

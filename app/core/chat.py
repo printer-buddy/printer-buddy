@@ -184,18 +184,17 @@ class Chat:
         now = time.time()
         if not owner:
             self._wait(pid, cid, now)
-            if self.block and (self.block.hits(text) or self.block.hits(name)):
-                self._refuse(pid, name, text, cid, now)
-        if not owner:
-            key = (pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])
-            if now - self.sent.get(key, 0.0) < VIEWER_GAP:
-                raise ValueError("Slow down a little.")
             room = self.recent.setdefault(pid, deque())
             while room and now - room[0] > 60:
                 room.popleft()
             if len(room) >= ROOM_PER_MINUTE:
                 raise ValueError("The chat is very busy, try again in a moment.")
             room.append(now)
+            if self.block and (self.block.hits(text) or self.block.hits(name)):
+                self._refuse(pid, name, text, cid, now)
+            key = (pid, re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])
+            if now - self.sent.get(key, 0.0) < VIEWER_GAP:
+                raise ValueError("Slow down a little.")
             self.sent[key] = now
             if len(self.sent) > 2000:
                 self.sent = {k: t for k, t in self.sent.items() if now - t < 60}
@@ -211,6 +210,12 @@ class Chat:
         note = _clean(note, 100)
         now = time.time()
         self._wait(pid, cid, now)
+        room = self.recent.setdefault(pid, deque())
+        while room and now - room[0] > 60:
+            room.popleft()
+        if len(room) >= ROOM_PER_MINUTE:
+            raise ValueError("The chat is very busy, try again in a moment.")
+        room.append(now)
         if self.block and (self.block.hits(note) or self.block.hits(name)):
             self._refuse(pid, name, note, cid, now)
         key = (pid, "flag:" + re.sub(r"[^A-Za-z0-9_-]", "", str(cid))[:40])

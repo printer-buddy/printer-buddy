@@ -33,6 +33,12 @@ DEFAULT_MODE = "alert"
 # only in onnxruntime-gpu builds (updater installs it for heavy when nvidia-smi works)
 GPU_PROVIDERS = {"CUDAExecutionProvider": "GPU (CUDA)", "DmlExecutionProvider": "GPU (DirectML)"}
 HISTORY_MAX = 4320   # checks kept per print for the score history chart (12h at 10s)
+BASE_CHECKS = 5      # checks at the start of a print that learn what the scene scores (see _from_start)
+BASE_CAP = 0.5       # the most a start level can take off a score
+NO_BASE = ("first_layer",)   # never zeroed: these fail right at the start
+EARLY_LAYERS = 3             # first_layer alerts up to this layer; spaghetti, warping, failure from it on
+EARLY_ONLY = ("first_layer",)
+PAUSE_HITS, PAUSE_WINDOW = 3, 5   # auto-pause: after the alert, pause when 3 of the next 5 checks are high too
 
 
 def enabled() -> bool:
@@ -150,6 +156,8 @@ LOCATE_MAX_AREA = 0.6
 BOX_MODES = ("always", "failure", "off")
 DEFAULT_BOX = "failure"
 AREA_MARGIN = 0.05
+# heavy: these overlapping quarters of the picture (or of the detection area) are scored too (x0, y0, x1, y1)
+TILES = ([0, 0, .6, .6], [.4, 0, 1, .6], [0, .4, .6, 1], [.4, .4, 1, 1])
 
 
 def _to_camera(box, flip_h, flip_v, rotation):
@@ -213,6 +221,7 @@ class AI:
         self.state: dict[int, dict] = {}
         self.box: dict[int, str] = {}
         self.areas: dict[int, list | None] = {}
+        self.layers: dict[int, int | None] = {}   # each printer's current layer (None: it doesn't report one)
 
     def load(self):
         self.model, self.error = None, None
@@ -255,11 +264,12 @@ class AI:
                 "at": st.get("at"), "streak": st.get("streak", 0), "alerted_at": st.get("alerted_at"),
                 "fast": st.get("streak", 0) > 0 and not st.get("prompted"), "box_mode": self.box_mode(pid),
                 "area": self.area(pid),
-                "alert_item": st.get("alert_item")}
+                "alert_item": st.get("alert_item"), "pause_pending": "pause_check" in st}
 
     def on_change(self, pid: int, prev: dict, v: dict):
         if not enabled() or not self.model:
             return
+        self.layers[pid] = v.get("layer")
         if v["state"] == "printing" and v["connection"] == "online" and self.mode_of(pid) != "off":
             if pid not in self.tasks:
                 if prev["state"] not in ("printing", "paused"):
@@ -278,6 +288,7 @@ class AI:
             self.state.pop(pid, None)
         elif pid in self.state:
             self.state[pid]["streak"] = 0
+            self.state[pid].pop("pause_check", None)   # paused, stopped or done: no pause still to come after a resume
 
     async def stop(self):
         for pid in list(self.tasks):
@@ -292,13 +303,40 @@ class AI:
         img = await self.snapshot(pid)
         if not img:
             raise RuntimeError("Couldn't get a picture from this printer's camera")
-        img, region = await self._crop(pid, img)
-        scores = await asyncio.to_thread(m.score, img, *self.transform(pid))
-        alerts = {l: v for l, v in scores.items() if m.kinds.get(l) == "alert"}
-        top = max(alerts, key=alerts.get) if alerts else None
-        score = alerts.get(top, 0.0)
+        scores, top, score, img, region = await self._score(pid, img)
         box = await self._locate(pid, img, region, top, score)
         return {"scores": scores, "top": top, "score": score, "box": box, "at": time.time()}
+
+    @staticmethod
+    def _top(m, scores: dict) -> tuple[str | None, float]:
+        alerts = {l: v for l, v in scores.items() if m.kinds.get(l) == "alert"}
+        top = max(alerts, key=alerts.get) if alerts else None
+        return top, alerts.get(top, 0.0)
+
+    async def _score(self, pid: int, img: bytes):
+        """Score one camera picture: (scores, top label, its score, the picture scored, its region).
+        The detection area if set, else the whole picture; for heavy, also the 4 overlapping
+        TILES of it, keeping whichever scores highest (a small print in a wide picture is ~1.7x
+        bigger in a tile: on a real K1C spaghetti fail, 99-100% every frame instead of 38-96%,
+        and the clean frames stayed under 10%)."""
+        m, t = self.model, self.transform(pid)
+        part, region = await self._crop(pid, img)
+        scores = await asyncio.to_thread(m.score, part, *t)
+        best = (scores, *self._top(m, scores), part, region)
+        if m.meta.get("kind") == "heavy":
+            b = region or [0., 0., 1., 1.]   # tiles of the area when there is one, else of the whole picture
+            w, h = b[2] - b[0], b[3] - b[1]
+            for q in TILES:
+                tile = [b[0] + q[0] * w, b[1] + q[1] * h, b[0] + q[2] * w, b[1] + q[3] * h]
+                try:
+                    part = await asyncio.to_thread(crop, img, tile)
+                    scores = await asyncio.to_thread(m.score, part, *t)
+                except Exception as e:
+                    log.info("AI: couldn't score a tile of printer %s's picture: %s", pid, e)
+                    break
+                if (cand := (scores, *self._top(m, scores), part, tile))[2] > best[2]:
+                    best = cand
+        return best
 
     async def _crop(self, pid: int, img: bytes) -> tuple[bytes, list[float] | None]:
         a = self.area(pid)
@@ -375,28 +413,62 @@ class AI:
             return max(MIN_INTERVAL, interval - SUSPECT_SPEEDUP)
         return interval
 
+    @staticmethod
+    def _from_start(m, st: dict, scores: dict, layer: int | None = None) -> tuple[str | None, float]:
+        """The alert score that counts: each failure type's score measured from what it scored at the
+        start of the print (the first BASE_CHECKS checks, bed nearly empty), so things always in view
+        (a light, a reflection) are zeroed out. The start level is capped at BASE_CAP, so a scene that
+        scores high can't blind the AI; first_layer isn't zeroed, as it fails right at the start.
+        st is emptied when a print starts, so each print learns its own start.
+        With a layer number, each type only counts where it can happen: first_layer up to layer
+        EARLY_LAYERS, the rest from that layer on. No layer number: every type, all the time."""
+        base, n = st.setdefault("base", {}), st.get("base_n", 0)
+        alerts = {l: v for l, v in scores.items() if m.kinds.get(l) == "alert"}
+        if n < BASE_CHECKS:
+            for l, v in alerts.items():
+                if l not in NO_BASE:
+                    base[l] = max(base.get(l, 0.0), v)
+            st["base_n"] = n + 1
+        # the start level becomes 0 and 100% stays 100% (a plain minus would cap scores below the threshold)
+        adj = {l: max(0.0, (v - b) / (1 - b)) for l, v in alerts.items() for b in [min(base.get(l, 0.0), BASE_CAP)]}
+        if layer is not None:
+            adj = {l: v for l, v in adj.items() if (layer <= EARLY_LAYERS if l in EARLY_ONLY else layer >= EARLY_LAYERS)}
+        top = max(adj, key=adj.get) if adj else None
+        return top, round(adj.get(top, 0.0), 4)
+
     async def _check(self, pid: int, s: dict):
         m = self.model
         img = await self.snapshot(pid)
         if not m or not img:
             return
-        crop_img, region = await self._crop(pid, img)
         try:
-            scores = await asyncio.to_thread(m.score, crop_img, *self.transform(pid))
+            scores, top, score, crop_img, region = await self._score(pid, img)
         except Exception as e:
             log.info("AI: couldn't score printer %s snapshot: %s", pid, e)
             return
-        alerts = {l: v for l, v in scores.items() if m.kinds.get(l) == "alert"}
-        top = max(alerts, key=alerts.get) if alerts else None
-        score = alerts.get(top, 0.0)
-        box = await self._locate(pid, crop_img, region, top, score)
         st = self.state.setdefault(pid, {})
+        top, score = self._from_start(m, st, scores, self.layers.get(pid))
+        box = await self._locate(pid, crop_img, region, top, score)
         st.update(scores=scores, top=top, score=score, box=box, at=time.time())
         hist = st.setdefault("history", [])
         hist.append([round(st["at"]), score, top or "", 0])
         if len(hist) > HISTORY_MAX:
             del hist[:len(hist) - HISTORY_MAX]
-        st["streak"] = st.get("streak", 0) + 1 if score >= float(s["ai_threshold"]) else 0
+        high = score >= float(s["ai_threshold"])
+        # an alert on an auto-pause printer pauses only if PAUSE_HITS of the next PAUSE_WINDOW checks are high
+        # too (not in a row: real spaghetti jumps, 73 61 55 80): a false alarm that drops away never pauses
+        if pc := st.get("pause_check"):
+            pc["seen"] += 1
+            pc["hits"] += high
+            if pc["hits"] >= PAUSE_HITS:
+                st.pop("pause_check")
+                if self.mode_of(pid) == "pause":
+                    log.info("AI: printer %s %s held for %s of %s checks -> pause", pid, top, pc["hits"], pc["seen"])
+                    await self.on_alert(pid, top, score, img, "pause", box, again=True)
+            elif pc["seen"] >= PAUSE_WINDOW:
+                st.pop("pause_check")
+                log.info("AI: printer %s only %s of %s checks high after the alert -> no pause", pid, pc["hits"], pc["seen"])
+        st["streak"] = st.get("streak", 0) + 1 if high else 0
         if not st["streak"]:
             st["prompted"] = False
         cooled = time.time() - (st.get("alerted_at") or 0) >= float(s["ai_cooldown"]) * 60
@@ -404,7 +476,11 @@ class AI:
             st["alerted_at"], st["streak"], st["prompted"] = time.time(), 0, True
             hist[-1][3] = 1
             mode = self.mode_of(pid)
-            log.info("AI: printer %s %s %.0f%% for %s checks -> %s", pid, top, score * 100, s["ai_hold"], mode)
-            if mode != "off":
+            log.info("AI: printer %s %s %.0f%% for %s checks -> %s", pid, top, score * 100, s["ai_hold"],
+                     "alert, pause if it holds" if mode == "pause" else mode)
+            if mode == "pause":
+                st["pause_check"] = {"seen": 0, "hits": 0}
+                await self.on_alert(pid, top, score, img, "alert", box)
+            elif mode != "off":
                 await self.on_alert(pid, top, score, img, mode, box)
         self.on_update(pid)

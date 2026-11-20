@@ -26,7 +26,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-LABELS = ("ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob", "crack")
+LABELS = ("ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob")
 PRINT_MARKS = (0.10, 0.50, 0.90)
 KEEP = 500
 MAX_PHOTO = 1_000_000   # bytes; the relay refuses photos over 1 MB
@@ -135,7 +135,8 @@ class Collector:
         im.save(buf, "JPEG", quality=85)
         if buf.tell() > MAX_PHOTO:
             # never queued: the relay would refuse it, holding up every photo after it
-            raise ValueError(f"photo is {buf.tell() // 1000} KB, over the {MAX_PHOTO // 1000} KB limit")
+            raise ValueError(f"the camera picture is too big ({buf.tell() // 1000} KB, the limit is {MAX_PHOTO // 1000} KB). "
+                             "Try turning down the camera's resolution.")
         return buf.getvalue()
 
     def add(self, pid: int, printer: str, jpeg: bytes, source: str, status: str,

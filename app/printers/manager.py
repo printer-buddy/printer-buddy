@@ -260,7 +260,9 @@ class Manager:
             self._broadcast("printer", self.view(pid))
 
     async def ai_alert(self, pid: int, label: str, score: float, image: bytes | None, mode: str,
-                       box: list | None = None):
+                       box: list | None = None, again: bool = False):
+        """mode "pause" pauses the print. again: the pause that follows an alert already sent
+        (the failure held), so its photo isn't saved a second time."""
         c, row = self.clients.get(pid), self.rows.get(pid)
         if not c or not row:
             return
@@ -272,7 +274,7 @@ class Manager:
             except Exception as e:
                 log.warning("AI: couldn't pause printer %s: %s", pid, e)
         nice = label.replace("_", " ")
-        if self.collect and image:
+        if self.collect and image and not again:
             item = self.collect.add(pid, row["name"], image, "alert", "pending", suggested=label,
                                     meta=self._ai_meta(pid))
             if item and self.ai:

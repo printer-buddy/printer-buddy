@@ -18,7 +18,7 @@
   python3 app/core/updater.py streamer   download and set up the camera streamer
   python3 app/core/updater.py packages   system packages the chosen features need
 
-Root jobs go through the root helper (tools/root.sh), the only thing the app may run with sudo.
+Nothing here needs root; the camera streamer runs under Printer Buddy (see app/core/streamer.py).
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / "printer-buddy.env"
 STATE = ROOT / "data" / "parts"
 VENV = ROOT / ".venv" / "bin"
-HELPERS = ("/usr/local/lib/printer-buddy/root.sh", "/usr/local/lib/printer-buddy/streamer-root.sh")
+HELPERS = ("/usr/local/lib/printer-buddy/restart.sh",)
 RELEASES = "https://api.github.com/repos/printer-buddy/printer-buddy/releases?per_page=100"
 HDR = {"User-Agent": "printer-buddy", "Accept": "application/vnd.github+json"}
 CHANNEL_BRANCH = {"stable": "main", "nightly": "nightly"}
@@ -211,14 +211,6 @@ def helper() -> str | None:
     return next((h for h in HELPERS if os.path.exists(h)), None)
 
 
-def root(*args) -> bool:
-    h = helper()
-    if not h:
-        say("The root helper isn't set up yet: run ./install.sh and pick Update once.")
-        return False
-    return subprocess.run(["sudo", "-n", h, *args]).returncode == 0
-
-
 def pip() -> bool:
     if not (VENV / "pip").exists():
         return True
@@ -252,11 +244,57 @@ def ensure_ai() -> bool:
     return True
 
 
+STREAM_BIN = ROOT / "data" / "streamer-bin"
+
+
+def _arch(table: dict) -> str | None:
+    return table.get(platform.machine())
+
+
+def fetch_stream_bins(tier: str) -> bool:
+    STREAM_BIN.mkdir(parents=True, exist_ok=True)
+    if tier == "light":
+        a = _arch({"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64", "armv7l": "armhf", "armv6l": "armhf"})
+        if not a:
+            say(f"No mjpg-streamer build for {platform.machine()}.")
+            return True
+        dest = STREAM_BIN / "mjpg-streamer"
+        dest.mkdir(parents=True, exist_ok=True)
+        url = f"https://github.com/printer-buddy/print-buddy-streamer/releases/download/mjpg-streamer/mjpg-streamer-{a}.tar.gz"
+        try:
+            data = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "printer-buddy"}), timeout=120).read()
+            with tarfile.open(fileobj=io.BytesIO(data)) as t:
+                members = []
+                for m in t.getmembers():
+                    parts = m.name.split("/", 1)
+                    if len(parts) == 2 and parts[1]:
+                        m.name = parts[1]
+                        members.append(m)
+                t.extractall(dest, members=members, filter="data") if sys.version_info >= (3, 12) else t.extractall(dest, members=members)
+        except Exception as e:
+            say(f"Couldn't download mjpg-streamer: {e}")
+            return False
+    elif tier == "advanced":
+        if not shutil.which("go2rtc") and not (STREAM_BIN / "go2rtc").exists():
+            a = _arch({"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64", "armv7l": "arm", "armv6l": "armv6"})
+            if not a:
+                say(f"No go2rtc build for {platform.machine()}.")
+                return True
+            try:
+                data = urllib.request.urlopen(urllib.request.Request(
+                    f"https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_{a}",
+                    headers={"User-Agent": "printer-buddy"}), timeout=120).read()
+                (STREAM_BIN / "go2rtc").write_bytes(data)
+                (STREAM_BIN / "go2rtc").chmod(0o755)
+            except Exception as e:
+                say(f"Couldn't download go2rtc: {e}")
+                return False
+    return True
+
+
 def ensure_streamer() -> bool:
     tier = env("PB_STREAM")
     if tier == "off":
-        if helper():
-            root("disable")
         return True
     if not fetch_part("streamer", f"print-buddy-streamer-{tier}.tar.gz", "print-buddy-streamer", ROOT / "streamer"):
         return False
@@ -266,26 +304,16 @@ def ensure_streamer() -> bool:
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text(text)
     say(f"Setting up the camera streamer ({tier})...")
-    import pwd
-    user = pwd.getpwuid(os.getuid()).pw_name
-    if not all(root(*a) for a in (("deps", tier), ("unit", str(ROOT), user), ("enable",), ("restart",))):
+    if not fetch_stream_bins(tier):
         say("Couldn't set up the camera streamer.")
         return False
-    asvc = Path.home() / "printer_data" / "moonraker.asvc"
-    if asvc.exists() and "printer-buddy-streamer" not in asvc.read_text().split():
-        with open(asvc, "a") as fh:
-            fh.write("printer-buddy-streamer\n")
     return True
 
 
 def ensure_packages() -> bool:
-    ok = True
     if env("PB_VIDEO") == "timelapse" and not shutil.which("ffmpeg"):
-        say("Installing ffmpeg (needed for timelapses)...")
-        if not root("pkg", "ffmpeg"):
-            say("Couldn't install ffmpeg; timelapses will save pictures but no video.")
-            ok = False
-    return ok
+        say("ffmpeg isn't installed; timelapses will save pictures but no video. Re-run ./install.sh to add it.")
+    return True
 
 
 def after_core() -> bool:

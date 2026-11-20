@@ -22,7 +22,7 @@ RUN_USER="${SUDO_USER:-$USER}"
 ENV_FILE="$DIR/printer-buddy.env"
 BACKUP_DIR="$DIR/backups"
 ASVC="$(getent passwd "$RUN_USER" | cut -d: -f6)/printer_data/moonraker.asvc"
-HELPER=/usr/local/lib/printer-buddy/root.sh
+HELPER=/usr/local/lib/printer-buddy/restart.sh
 UPDATER="$DIR/app/core/updater.py"
 PRINTER_STREAMER=https://raw.githubusercontent.com/printer-buddy/print-buddy-streamer/main/install-printer.sh
 PORT_GIVEN=""
@@ -71,7 +71,7 @@ ask()   { local a; read -r -p "$1" a </dev/tty || a=""; printf '%s' "${a,,}"; }
 pause() { read -r -p "Press Enter to go back..." _ </dev/tty || true; }
 yesno() { case "$(ask "$1 [y/N] ")" in y|yes) return 0 ;; *) return 1 ;; esac; }
 
-ensure_env() { [ -f "$ENV_FILE" ] || cp "$DIR/printer-buddy.env.example" "$ENV_FILE"; }
+ensure_env() { [ -f "$ENV_FILE" ] || cp "$DIR/printer-buddy.env.example" "$ENV_FILE"; chmod 600 "$ENV_FILE" 2>/dev/null || true; }
 get_env() { { grep -E "^$1=" "$ENV_FILE" 2>/dev/null || true; } | tail -n1 | cut -d= -f2- | tr -d '[:space:]'; }
 set_env() {
   ensure_env
@@ -262,8 +262,8 @@ fetch_parts() { python3 "$UPDATER" parts; }
 
 install_helper() {
   sudo install -d -o root -g root -m 755 "$(dirname "$HELPER")" \
-    && sudo install -o root -g root -m 755 "$DIR/tools/root.sh" "$HELPER" || return 1
-  sudo rm -f "$(dirname "$HELPER")/streamer-root.sh"
+    && sudo install -o root -g root -m 755 "$DIR/tools/restart.sh" "$HELPER" || return 1
+  sudo rm -f "$(dirname "$HELPER")/root.sh" "$(dirname "$HELPER")/streamer-root.sh"
   local rule="$RUN_USER ALL=(root) NOPASSWD: $HELPER"
   echo "$rule" | sudo tee /etc/sudoers.d/printer-buddy.tmp >/dev/null \
     && sudo visudo -cqf /etc/sudoers.d/printer-buddy.tmp \
@@ -272,6 +272,27 @@ install_helper() {
 }
 
 ensure_streamer() { python3 "$UPDATER" streamer; }
+
+camera_setup() {
+  getent group printerbuddy >/dev/null 2>&1 || sudo groupadd printerbuddy
+  sudo usermod -aG printerbuddy,video "$RUN_USER" 2>/dev/null || true
+  local pkgs=""
+  case "$(get_env PB_STREAM)" in
+    light) pkgs="v4l-utils" ;;
+    basic) pkgs="ustreamer v4l-utils" ;;
+    advanced) pkgs="ustreamer ffmpeg v4l-utils" ;;
+  esac
+  if [ -n "$pkgs" ]; then
+    echo "Installing camera packages ($pkgs)..."
+    sudo apt-get install -y -q $pkgs || { sudo apt-get update -q && sudo apt-get install -y -q $pkgs; } || echo "Some camera packages didn't install."
+  fi
+  if systemctl list-unit-files printer-buddy-streamer.service >/dev/null 2>&1; then
+    echo "Moving the camera streamer under Printer Buddy..."
+    sudo systemctl disable --now printer-buddy-streamer >/dev/null 2>&1 || true
+    sudo rm -f /etc/systemd/system/printer-buddy-streamer.service
+    sudo systemctl daemon-reload
+  fi
+}
 
 moonraker_service() {
   [ -f "$ASVC" ] || return 0
@@ -299,14 +320,14 @@ do_install() {
   fi
   [ -d "$DIR/.venv" ] || python3 -m venv "$DIR/.venv" || return 1
   "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
-  mkdir -p "$DIR/data"
+  mkdir -p "$DIR/data"; chmod 700 "$DIR/data" 2>/dev/null || true
   ensure_ffmpeg
   ensure_ai
   choose_port || return 1
   write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
   moonraker_service add
-  install_helper && ensure_streamer
+  install_helper && camera_setup && ensure_streamer
   hard_restart || return 1
   echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
 }
@@ -321,6 +342,7 @@ do_update() {
 
 after_code_change() {
   installed && install_helper
+  installed && camera_setup
   python3 "$UPDATER" after || echo "Some parts didn't update, see above."
   if installed; then write_unit; hard_restart || return 1; fi
   return 0
@@ -346,6 +368,8 @@ do_remove() {
   # the root helper and its sudo rule only exist for Printer Buddy: don't leave a password-free sudo rule behind
   sudo rm -f "$HELPER" /etc/sudoers.d/printer-buddy; sudo rmdir "$(dirname "$HELPER")" 2>/dev/null
   echo "Root helper and its sudo rule removed."
+  rm -rf "$DIR/data/streamer-bin"
+  getent group printerbuddy >/dev/null 2>&1 && sudo groupdel printerbuddy 2>/dev/null || true
   if [ -d "$DIR/.venv" ] && yesno "Also delete the Python environment (.venv)?"; then rm -rf "$DIR/.venv" && echo "Deleted .venv."; fi
   if [ -d "$DIR/data" ] && yesno "Also delete your printers and settings (data/)? Make a backup first if unsure."; then rm -rf "$DIR/data" && echo "Deleted data/."; fi
   echo "Kept: system packages Printer Buddy may have installed (ffmpeg, cloudflared, ustreamer, go2rtc), since other programs can use them."
@@ -353,7 +377,7 @@ do_remove() {
 
 make_backup() {
   local dest="$BACKUP_DIR/$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$dest"
+  mkdir -p "$dest"; chmod 700 "$BACKUP_DIR" "$dest" 2>/dev/null || true
   [ -d "$DIR/data" ] && cp -a "$DIR/data" "$dest/"
   [ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$dest/"
   echo "Backup saved: ${dest#$DIR/}"
@@ -569,7 +593,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && camera_setup && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         sync_tunnel
         return ;;
     esac

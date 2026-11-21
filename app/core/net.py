@@ -112,6 +112,11 @@ async def http_post(url: str, body: bytes, headers: dict[str, str] | None = None
     return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, body), timeout)
 
 
+async def http_put(url: str, body: bytes = b"", headers: dict[str, str] | None = None, timeout: float = 5.0,
+                   max_bytes: int = 1_000_000) -> tuple[int, dict[str, str], bytes]:
+    return await asyncio.wait_for(_request("PUT", url, headers or {}, max_bytes, body), timeout)
+
+
 async def http_post_stream(url: str, chunks, length: int, headers: dict[str, str] | None = None, timeout: float = 3600.0,
                            max_bytes: int = 2_000_000) -> tuple[int, dict[str, str], bytes]:
     return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, chunks=chunks, length=length), timeout)

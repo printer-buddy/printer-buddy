@@ -42,6 +42,7 @@ from .core.store import Store
 from .core.bambu import discover_elegoo as bambu_discover
 from .core import components as comp
 from .core.streamer import Streamer, enabled as streamer_enabled
+from .core import camera as go2rtc
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
 from .ai import detector as ai_mod
@@ -292,21 +293,33 @@ async def snapshot(request: Request):
         cam = int(request.query_params.get("cam", 0))
     except ValueError:
         return err("bad camera number")
-    native = manager.clients[pid].native_camera
+    client = manager.clients[pid]
+    native = client.native_camera
     if native:
         jpeg = await native.snapshot()
         return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"}) if jpeg else err("no webcam picture yet", 503)
-    url = manager.clients[pid].snapshot_url(cam)
-    if not url or not url.startswith("http://"):
-        return err("no webcam", 404)
-    try:
-        status, headers, data = await http_get(url, timeout=6)
-    except Exception as e:
-        return err(f"webcam unreachable: {e}", 502)
-    if status != 200:
-        return err(f"webcam returned {status}", 502)
-    return Response(data, media_type=headers.get("content-type", "image/jpeg"),
-                    headers={"Cache-Control": "no-store"})
+    if hasattr(client, "wake_camera"):
+        await client.wake_camera()
+    url = client.snapshot_url(cam)
+    if url and url.startswith("http://"):
+        try:
+            status, headers, data = await http_get(url, timeout=6)
+        except Exception as e:
+            return err(f"webcam unreachable: {e}", 502)
+        if status != 200:
+            return err(f"webcam returned {status}", 502)
+        return Response(data, media_type=headers.get("content-type", "image/jpeg"),
+                        headers={"Cache-Control": "no-store"})
+    src = client.source_url(cam)
+    if src and client.cam_mode_at(cam) in ("convert", "hls") and await go2rtc.available():
+        try:
+            status, headers, data = await http_get(go2rtc.frame_url(src), timeout=8)
+        except Exception as e:
+            return err(f"webcam unreachable: {e}", 502)
+        if status != 200:
+            return err(f"webcam returned {status}", 502)
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    return err("no webcam", 404)
 
 
 async def live_stream(request: Request):
@@ -319,16 +332,24 @@ async def live_stream(request: Request):
         cam = int(request.query_params.get("cam", 0))
     except ValueError:
         return err("bad camera number")
-    native = manager.clients[pid].native_camera
+    client = manager.clients[pid]
+    native = client.native_camera
     if native:
         async def frames():
             async for jpeg in native.frames():
                 yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg) + jpeg + b"\r\n"
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"Cache-Control": "no-store"})
-    url = manager.clients[pid].stream_url(cam)
-    if not url or not url.startswith("http://"):
-        return err("this camera has no MJPEG stream", 404)
+    url = client.stream_url(cam)
+    if not (url and url.startswith("http://")):
+        src = client.source_url(cam)
+        if src and client.cam_mode_at(cam) in ("convert", "hls") and await go2rtc.available():
+            name = go2rtc.stream_name(pid, cam)
+            if not await go2rtc.ensure(name, src):
+                return err("couldn't start the camera converter", 502)
+            url = go2rtc.mjpeg_url(name)
+        else:
+            return err("this camera has no MJPEG stream", 404)
     try:
         upstream = await http_stream(url)
     except Exception as e:
@@ -1628,6 +1649,7 @@ async def lifespan(app):
     streamer.start()
     yield
     await streamer.stop()
+    await go2rtc.stop()
     await manager.collect.stop()
     await manager.ai.stop()
     await manager.stop()

@@ -351,13 +351,29 @@ class Bambu:
                 o[fan] = {"speed": round(_num(r.get(field)) / 15, 2), "rpm": None}
         return o
 
+    def _active_tray(self) -> int:
+        # The loaded tray as a global number (ams_id*4 + slot, or the unit id for AMS HT); 254 external, 255 none.
+        # H2-series printers report it per active nozzle in device.extruder.info[].snow, not ams.tray_now.
+        ext = (self.report.get("device") or {}).get("extruder") or {}
+        info = ext.get("info")
+        if info is not None:
+            nozzle = (int(_num(ext.get("state"), 0)) >> 4) & 0xF
+            if nozzle not in (0, 1):
+                nozzle = 0
+            snow = next((e.get("snow") for e in info if e.get("id") == nozzle), None)
+            if snow is None:
+                return 255
+            unit, slot = snow >> 8, snow & 0xFF
+            return unit if unit >= 254 or unit >= 128 else unit * 4 + slot
+        return int(_num((self.report.get("ams") or {}).get("tray_now"), 255))
+
     def _mmu(self, state: str) -> dict:
         """The AMS as a Happy Hare MMU, which Fluidd and Mainsail already show."""
         trays, units = self.trays(), self.ams_units()
         if not trays:
             return {}
         out = {}
-        now = int(_num((self.report.get("ams") or {}).get("tray_now"), 255))
+        now = self._active_tray()
         gate = next((g for g, t in enumerate(trays) if t["tray"] == now), -2 if now == 254 else -1)
         lite = self.model.startswith(("A1", "A2"))
         machine = {"num_units": len(units)}
@@ -487,7 +503,7 @@ class Bambu:
         trays = self.trays()
         if not trays:
             raise ValueError("no AMS")
-        now = int(_num((self.report.get("ams") or {}).get("tray_now"), 255))
+        now = self._active_tray()
         t = next((t for t in trays if t["tray"] == now), trays[0])
         temp = t["temp"] or 220
         await self._send({"print": {"command": "ams_change_filament", "ams_id": t["unit_id"], "slot_id": 255,

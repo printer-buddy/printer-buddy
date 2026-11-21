@@ -2,6 +2,18 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-21 sterling m mmu/loaded################################
+
+## MMU: detect the loaded filament on AFC Lite and H2-series Bambu
+
+The "Loaded" line and active slot now work on two setups that showed "Loaded: Nothing" even mid-print: paxx12's AFC-Lite stub (Snapmaker U1) and Bambu H2-series printers (H2C/H2D/H2S/H3C). *Why:* AFC Lite hardcodes `current_load` to None and reports the active lane in `current_lane`; and the H2-series moved the loaded tray out of `ams.tray_now` into the per-nozzle `device.extruder.info[].snow` (unit `snow>>8`, slot `snow&0xFF`; active nozzle `(extruder.state>>4)&0xF`).
+
+Lines changed:
+- `app/printers/moonraker.py` — 860 `afc_view` falls back to `current_lane` when `current_load` is empty
+- `bambu-convert/bambu_convert/printer.py` — 354–369 add `_active_tray` (H2: active tray from the active nozzle's `snow`, else `ams.tray_now`); 376, 506 read the loaded tray through it
+
+################################end of entry################################
+
 ################################2026-11-21 sterling m cameras/webrtc-cors################################
 
 ## WebRTC: play it live by proxying the handshake through Printer Buddy

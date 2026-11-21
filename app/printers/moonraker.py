@@ -857,7 +857,7 @@ class MoonrakerClient:
             c = str(c or "").strip().lstrip("#")
             return "#" + c[:6].lower() if re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", c) else None
 
-        cur = a.get("current_load")
+        cur = a.get("current_load") or a.get("current_lane")   # AFC Lite stubs hardcode current_load=None, set current_lane
         units, gates, gate, seen = [], [], -1, set()
 
         def add(names):

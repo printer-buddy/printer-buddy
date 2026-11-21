@@ -445,9 +445,15 @@ class MoonrakerClient:
             self.webcams = []
         self._changed()
 
-    async def command(self, action: str):
+    async def command(self, action: str, **params):
+        """Print controls (pause, resume, cancel, E-stop), plus the purifier for the few Klipper printers that have one.
+        Keep this the only command() in the class: a second one with the same name silently replaces it."""
+        if action == "purifier":
+            return await self.purifier_control(params.get("fan", ""), params.get("speed"))
         methods = {"pause": "printer.print.pause", "resume": "printer.print.resume",
                    "cancel": "printer.print.cancel", "estop": "printer.emergency_stop"}
+        if action not in methods:
+            raise RPCError(f"unknown command: {action}")
         return await self._call(methods[action], timeout=15)
 
     async def list_files(self) -> list[dict]:
@@ -691,6 +697,7 @@ class MoonrakerClient:
             "idle_state": (s.get("idle_timeout") or {}).get("state") if live else None,
             "filename": ps.get("filename") or None,
             "message": ps.get("message") or ds.get("message") or None,
+            "display_message": ds.get("message") or None,   # M117 only, as Fluidd shows it (no error text)
             "progress": progress,
             "print_duration": duration,
             "eta": eta,
@@ -1007,12 +1014,6 @@ class MoonrakerClient:
         p = self.status.get("purifier") or {}
         return {"present": bool(p.get("power_detected")), "mode": p.get("mode"),
                 "exhaust": (p.get("exhaust_fan") or {}).get("speed"), "inner": (p.get("inner_fan") or {}).get("speed")}
-
-    async def command(self, action: str, **params):
-        """The same native-command route Bambu/Elegoo use, for the handful of Klipper printers that need one."""
-        if action == "purifier":
-            return await self.purifier_control(params.get("fan", ""), params.get("speed"))
-        raise RPCError(f"unknown command: {action}")
 
     async def purifier_control(self, fan: str, speed: float | None = None):
         """Not a gcode/RPC command: the printer's own HTTP endpoint for the purifier (seen on the Snapmaker U1)."""

@@ -219,10 +219,9 @@ def run(what: str) -> tuple[bool, str]:
     return p.returncode == 0, (p.stdout + p.stderr).strip()[-2000:]
 
 
-SERVICES = ("printer-buddy", "printer-buddy-streamer")
-# (action, service) -> root helper job; Printer Buddy restarting itself is done by the caller
-SYSTEM_JOBS = {("restart", "printer-buddy-streamer"): "restart", ("start", "printer-buddy-streamer"): "enable",
-               ("stop", "printer-buddy-streamer"): "disable", ("reboot", None): "reboot", ("shutdown", None): "shutdown"}
+SERVICES = ("printer-buddy",)
+# (action, service) -> restart.sh job; Printer Buddy restarting itself and the streamer are done by the caller
+SYSTEM_JOBS = {("reboot", None): "reboot", ("shutdown", None): "shutdown"}
 
 
 def system() -> dict:

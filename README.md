@@ -55,6 +55,7 @@ dataset credits. Models: [releases tagged `ai-`](https://github.com/printer-budd
 | `DB_PATH` | `data/monitor.db` | SQLite file holding the printers you picked |
 | `SCAN_SUBNETS` | auto (/24 of this box) | comma list, e.g. `192.168.1.0/24,192.168.2.0/24` |
 | `PROBE_PORTS` | `7125,80` | ports tried during the sweep |
+| `PB_ALLOWED_HOSTS` | — | extra names you open Printer Buddy by, e.g. `printers.home`. IPs, `localhost`, `*.local` and this box's hostname always work; other names are refused |
 | `NTFY_URL` / `NTFY_TOKEN` | — | e.g. `https://ntfy.sh/my-printers` |
 | `DISCORD_WEBHOOK` | — | Discord webhook URL |
 | `NOTIFY_EVENTS` | all | `started,paused,resumed,finished,failed,cancelled` |

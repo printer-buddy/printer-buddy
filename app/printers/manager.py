@@ -340,6 +340,8 @@ class Manager:
         cam = (self._cam_settings(row) or {}).get("main", 0)
         if c.native_camera:
             return await c.native_camera.snapshot()
+        if hasattr(c, "wake_camera"):
+            await c.wake_camera()
         url = c.snapshot_url(cam)
         if not url or not url.startswith("http://"):
             return None

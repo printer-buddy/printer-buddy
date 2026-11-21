@@ -114,6 +114,7 @@ class MoonrakerClient:
         self.components: list[str] = []
         self.status: dict = {}
         self.webcams: list[dict] = []
+        self._cam_woke = 0.0
         self.extras: list[str] = []
         self.filament_diameter = 1.75
         self.nozzle_diameter = 0.4
@@ -614,21 +615,37 @@ class MoonrakerClient:
             log.exception("on_change handler failed")
 
     def _snap_cams(self) -> list[dict]:
-        return [cam for cam in self.webcams if cam.get("snapshot_url")]
+        cams = [cam for cam in self.webcams if cam.get("snapshot_url") or cam.get("stream_url")]
+        if not cams and getattr(self, "has_materials", False):
+            # Snapmaker U1 stock firmware lists no webcam; it serves a still at this path,
+            # kept fresh by a camera.start_monitor websocket call (see wake_camera)
+            return [{"name": "Camera", "service": "snapmaker-monitor",
+                     "snapshot_url": "/server/files/camera/monitor.jpg"}]
+        return cams
+
+    async def wake_camera(self):
+        if [c for c in self.webcams if c.get("snapshot_url") or c.get("stream_url")] or not getattr(self, "has_materials", False):
+            return
+        now = asyncio.get_event_loop().time()
+        if now - self._cam_woke < 30:
+            return
+        self._cam_woke = now
+        try:
+            await self._call("camera.start_monitor", {"domain": "lan", "interval": 0})
+        except Exception:
+            pass
 
     def snapshot_url(self, index: int = 0) -> str | None:
         cams = self._snap_cams()
         if not cams:
             return None
-        url = cams[min(max(index, 0), len(cams) - 1)]["snapshot_url"]
-        if url.startswith(("http://", "https://")):
-            return url
-        # relative URLs are served by the web frontend (Mainsail/Fluidd nginx), not Moonraker's port
-        return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
+        url = cams[min(max(index, 0), len(cams) - 1)].get("snapshot_url")
+        return self._abs(url) if url else None
 
     def _abs(self, url: str) -> str:
-        if url.startswith(("http://", "https://")):
+        if url.startswith(("http://", "https://", "rtsp://")):
             return url
+        # relative URLs are served by the web frontend (Mainsail/Fluidd nginx), not Moonraker's port
         return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
 
     @staticmethod
@@ -639,12 +656,39 @@ class MoonrakerClient:
             return False
         return service.startswith(("mjpegstreamer", "uv4l-mjpeg", "ipstream")) or "action=stream" in url or service == ""
 
+    @staticmethod
+    def cam_mode(cam: dict) -> str:
+        service = (cam.get("service") or "").lower()
+        stream = (cam.get("stream_url") or "").lower()
+        if MoonrakerClient._is_mjpeg(cam):
+            return "mjpeg"
+        if "webrtc" in service:
+            return "webrtc"
+        if "hls" in service or stream.endswith(".m3u8"):
+            return "hls"
+        if stream.startswith("rtsp://"):
+            return "convert"
+        return "snapshot"
+
     def stream_url(self, index: int = 0) -> str | None:
         cams = self._snap_cams()
         if not cams:
             return None
         cam = cams[min(max(index, 0), len(cams) - 1)]
         return self._abs(cam["stream_url"]) if self._is_mjpeg(cam) else None
+
+    def source_url(self, index: int = 0) -> str | None:
+        cams = self._snap_cams()
+        if not cams:
+            return None
+        cam = cams[min(max(index, 0), len(cams) - 1)]
+        return self._abs(cam["stream_url"]) if cam.get("stream_url") else None
+
+    def cam_mode_at(self, index: int = 0) -> str | None:
+        cams = self._snap_cams()
+        if not cams:
+            return None
+        return self.cam_mode(cams[min(max(index, 0), len(cams) - 1)])
 
     def cams_info(self) -> list[dict]:
         out = []
@@ -653,9 +697,11 @@ class MoonrakerClient:
                 rotation = int(cam.get("rotation") or 0)
             except (TypeError, ValueError):
                 rotation = 0
+            mode = self.cam_mode(cam)
             out.append({"name": cam.get("name") or f"Camera {i + 1}", "flip_h": bool(cam.get("flip_horizontal")),
                         "flip_v": bool(cam.get("flip_vertical")), "rotation": rotation, "target_fps": cam.get("target_fps"),
-                        "live": self._is_mjpeg(cam)})
+                        "mode": mode, "live": mode in ("mjpeg", "hls", "convert"),
+                        "service": cam.get("service") or "", "src": self._abs(cam["stream_url"]) if cam.get("stream_url") else None})
         return out
 
     def view(self) -> dict:
@@ -719,7 +765,7 @@ class MoonrakerClient:
             "nozzle_target": s.get("extruder", {}).get("target"),
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
-            "has_webcam": self.native_camera is not None or self.snapshot_url() is not None,
+            "has_webcam": self.native_camera is not None or bool(self._snap_cams()),
             **self._layers(ps, meta, s.get("gcode_move", {}).get("gcode_position"), duration),
             "cams": self.cams_info(),
             "speed_factor": s.get("gcode_move", {}).get("speed_factor"),

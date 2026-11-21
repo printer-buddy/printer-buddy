@@ -2,6 +2,36 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-21 sterling m cameras################################
+
+## Live video for every camera type over a share link
+
+RTSP, HLS and snapshot cameras now go live over a share link, not just MJPEG: Printer Buddy carries its own go2rtc and a static ffmpeg (fetched into `data/streamer-bin` on first use, no root) and converts them to MJPEG it can relay. *Why:* only MJPEG could cross the tunnel before, and the converter was tied to the "advanced" streamer tier.
+
+Lines changed:
+- `app/core/camera.py` — 1–172 new: a go2rtc supervisor that downloads go2rtc + a static ffmpeg, runs (or reuses) go2rtc on 127.0.0.1:1984, and exposes `available`/`ensure`/`stream_name`/`mjpeg_url`/`frame_url`
+- `app/core/net.py` — 115–119 add `http_put` (go2rtc's stream API needs PUT)
+- `app/printers/moonraker.py` — 618 `_snap_cams` also keeps stream-only cameras; 642–643 `snapshot_url` goes through `_abs`; 646, 648 `_abs` allows `rtsp://`; 660–664, 667–671 `cam_mode` classifies mjpeg/hls/convert/snapshot; 680–685 `source_url`; 687–691 `cam_mode_at`; 700, 703 `cams_info` reports `mode`/`live`; 768 `has_webcam` from `_snap_cams`
+- `app/main.py` — 45 import the go2rtc helper; 296–297, 335–336 take the client once; 313–321 snapshot falls back to go2rtc `frame.jpeg` for convert/hls; 343–352 `live_stream` converts convert/hls to MJPEG via go2rtc; 1652 stop go2rtc on shutdown
+
+## Snapmaker U1 stock-firmware camera
+
+A stock U1 lists no webcam; Printer Buddy now shows one, serving `/server/files/camera/monitor.jpg` and keeping it fresh with a `camera.start_monitor` websocket call while something is viewing it. *Why:* stock firmware exposes no MJPEG/RTSP, only that still, which goes stale without a periodic wake.
+
+Lines changed:
+- `app/printers/moonraker.py` — 117 add `_cam_woke`; 619–623 inject a "Camera" at `monitor.jpg` when a U1 (`has_materials`) lists none; 626–636 `wake_camera` sends `camera.start_monitor` over the websocket, capped to once per 30s
+- `app/main.py` — 301–302 wake before fetching a snapshot
+- `app/printers/manager.py` — 343–344 wake before a notify/AI snapshot
+
+## Live WebRTC flag for the UI
+
+A WebRTC camera is marked so the web UI can play it live on the LAN. *Why:* the UI needs the camera's service and source URL to run the handshake (the player itself is in the web UI repo).
+
+Lines changed:
+- `app/printers/moonraker.py` — 665–666 `cam_mode` adds the `webrtc` case; 704 `cams_info` adds `service` and `src`
+
+################################end of entry################################
+
 ################################2026-11-20 sterling m security/streamer/ai################################
 
 ## Security: origin/host guard, mask notify secrets, keep share chat/flags on the box

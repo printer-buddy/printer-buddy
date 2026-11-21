@@ -25,17 +25,18 @@ import socket
 import time
 import zlib
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.websockets import WebSocket
 from starlette.staticfiles import StaticFiles
 
 from .printers import discovery
 from .printers.manager import Manager
-from .core.net import get_json, http_get, http_stream
+from .core.net import get_json, http_get, http_request, http_stream, WebSocket as NetWebSocket
 from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .core.chat import Blocklist, Chat
 from .core.store import Store
@@ -367,6 +368,97 @@ async def live_stream(request: Request):
 
     return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace"),
                              headers={"Cache-Control": "no-store"})
+
+
+def _webrtc_base(pid: int, cam: int) -> str | None:
+    # the camera's own WebRTC signalling URL, resolved server-side so the browser never
+    # sends it (no cross-origin / SSRF). Only for WebRTC cameras served over http.
+    client = manager.clients.get(pid)
+    base = client.source_url(cam) if client and hasattr(client, "source_url") else None
+    if base and base.startswith("http://") and client.cam_mode_at(cam) == "webrtc":
+        return base
+    return None
+
+
+async def webrtc_signal(request: Request):
+    # Reverse-proxy the WebRTC handshake (camera-streamer POST, MediaMTX WHEP) through Printer
+    # Buddy so the browser talks same-origin; the camera's WebRTC endpoint sends no CORS headers.
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    try:
+        cam = int(request.query_params.get("cam", 0))
+    except ValueError:
+        return err("bad camera number")
+    base = _webrtc_base(pid, cam)
+    if not base:
+        return err("not a webrtc camera", 404)
+    rest = request.path_params.get("rest", "")
+    target = base.rstrip("/") + ("/" + rest if rest else "")
+    extra = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "cam"])
+    if extra:
+        target += ("&" if "?" in target else "?") + extra
+    fwd = {}
+    if ct := request.headers.get("content-type"):
+        fwd["Content-Type"] = ct
+    try:
+        status, rh, data = await http_request(request.method, target, fwd, await request.body())
+    except Exception as e:
+        return err(f"camera unreachable: {e}", 502)
+    out = {"Cache-Control": "no-store"}
+    if "content-type" in rh:
+        out["Content-Type"] = rh["content-type"]
+    if "link" in rh:
+        out["Link"] = rh["link"]
+    if "location" in rh:   # MediaMTX WHEP session: point the browser's follow-ups back at this proxy
+        sid = rh["location"].rstrip("/").rsplit("/", 1)[-1]
+        out["Location"] = f"/api/printers/{pid}/webrtc/whep/{sid}?cam={cam}"
+    return Response(data, status_code=status, headers=out)
+
+
+async def webrtc_ws(websocket: WebSocket):
+    # Reverse-proxy the go2rtc signalling WebSocket through Printer Buddy (same-origin for the browser).
+    pid = websocket.path_params["pid"]
+    try:
+        cam = int(websocket.query_params.get("cam", 0))
+    except ValueError:
+        await websocket.close()
+        return
+    base = _webrtc_base(pid, cam)
+    if not base:
+        await websocket.close()
+        return
+    u = urlsplit(urljoin(base, "api/ws"))
+    ws_url = "ws://" + u.netloc + u.path + (("?" + u.query) if u.query else "")
+    await websocket.accept()
+    try:
+        upstream = await NetWebSocket.connect(ws_url)
+    except Exception:
+        await websocket.close()
+        return
+
+    async def c2u():
+        try:
+            while True:
+                await upstream.send_text(await websocket.receive_text())
+        except Exception:
+            pass
+
+    async def u2c():
+        try:
+            while (msg := await upstream.recv()) is not None:
+                await websocket.send_text(msg)
+        except Exception:
+            pass
+
+    try:
+        await asyncio.gather(c2u(), u2c())
+    finally:
+        await upstream.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 async def ai_settings(request: Request):
@@ -1742,6 +1834,9 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}/snapshot", snapshot),
     Route("/api/printers/{pid:int}/plate", plate, methods=["GET", "PUT", "DELETE"]),
     Route("/api/printers/{pid:int}/stream", live_stream),
+    Route("/api/printers/{pid:int}/webrtc", webrtc_signal, methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"]),
+    Route("/api/printers/{pid:int}/webrtc/{rest:path}", webrtc_signal, methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"]),
+    WebSocketRoute("/api/printers/{pid:int}/webrtc-ws", webrtc_ws),
     Route("/api/printers/{pid:int}/shares", list_shares),
     Route("/api/printers/{pid:int}/shares", create_share, methods=["POST"]),
     Route("/api/shares/{code}", revoke_share, methods=["DELETE"]),

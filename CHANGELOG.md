@@ -2,6 +2,18 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-21 sterling m cameras/webrtc-cors################################
+
+## WebRTC: play it live by proxying the handshake through Printer Buddy
+
+A WebRTC camera now connects instead of dropping to snapshots: the signalling runs browser → Printer Buddy → camera (same-origin), because the camera sends no CORS header and Printer Buddy runs on a different host than the printer. The video still flows browser ↔ camera directly on the LAN. *Why:* the browser blocked the cross-origin offer (`Access-Control-Allow-Origin` missing, preflight 501), so the handshake never completed.
+
+Lines changed:
+- `app/core/net.py` — 120–124 add `http_request` (forward any method)
+- `app/main.py` — 28 import `urlencode`/`urljoin`/`urlsplit`; 33–34 import `WebSocketRoute`/`WebSocket`; 39 import `http_request` and the client `WebSocket`; 373–381 `_webrtc_base` resolves the camera's signalling URL server-side; 383–417 `webrtc_signal` proxies camera-streamer POST + MediaMTX WHEP and rewrites the WHEP session `Location`; 419–463 `webrtc_ws` proxies the go2rtc signalling WebSocket; 1837–1839 register the three routes
+
+################################end of entry################################
+
 ################################2026-11-21 sterling m cameras################################
 
 ## Live video for every camera type over a share link

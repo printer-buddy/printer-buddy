@@ -867,6 +867,7 @@ class MoonrakerClient:
                 w, full = o.get("weight"), o.get("initial_weight") or 1000
                 gates.append({"status": 1 if o.get("prep") or o.get("load") else 0, "material": o.get("material") or "",
                               "color": color(o.get("color")), "name": o.get("filament_name") or "", "label": str(n),
+                              "extruder": o.get("extruder"), "tool_loaded": bool(o.get("tool_loaded")),
                               "temp": o.get("extruder_temp"),
                               "remaining": max(0, min(100, round(w / full * 100))) if isinstance(w, (int, float)) and full else None})
                 if n == cur:

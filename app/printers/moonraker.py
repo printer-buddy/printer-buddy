@@ -869,6 +869,7 @@ class MoonrakerClient:
                               "color": color(o.get("color")), "name": o.get("filament_name") or "", "label": str(n),
                               "extruder": o.get("extruder"), "tool_loaded": bool(o.get("tool_loaded")),
                               "temp": o.get("extruder_temp"),
+                              "temp": o.get("extruder_temp"), "grams": round(w) if isinstance(w, (int, float)) else None,
                               "remaining": max(0, min(100, round(w / full * 100))) if isinstance(w, (int, float)) and full else None})
                 if n == cur:
                     gate = len(gates) - 1

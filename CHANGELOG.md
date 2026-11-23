@@ -10,6 +10,14 @@ The AFC filament view now passes through each lane's `extruder` (which nozzle th
 
 Lines changed:
 - `app/printers/moonraker.py` — 870 add `extruder` and `tool_loaded` (from the AFC lane status) to each `afc_view` gate
+################################2026-11-21 sterling m mmu/grams################################
+
+## MMU: report the grams left per AFC lane
+
+The AFC filament view now includes each lane's weight in grams, so the slot card can show grams next to the percent. *Why:* the UI only had a percent; the lane's `weight` was already read, just not passed through.
+
+Lines changed:
+- `app/printers/moonraker.py` — 870 add `grams` (rounded lane weight) to each AFC gate
 
 ################################end of entry################################
 

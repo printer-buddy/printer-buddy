@@ -194,6 +194,7 @@ async def ensure(name: str, src: str) -> bool:
                 return True
             return False
         except Exception as e:
+            _registered.pop(name, None)   # PUT outcome unknown (e.g. timeout) — don't trust the old cached source
             log.info("go2rtc add stream %s: %s", name, e)
             return False
 

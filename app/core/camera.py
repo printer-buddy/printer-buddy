@@ -175,6 +175,7 @@ class Go2rtc:
 _g = Go2rtc()
 _registered: dict[str, str] = {}   # stream name -> src already registered with the running go2rtc; reused instead of re-PUT
 _gen = 0                           # bumped on every registry clear, so a PUT finishing across a (re)start isn't cached stale
+_locks: dict[str, asyncio.Lock] = {}   # per-name lock so concurrent registrations for a name serialize
 
 
 async def available() -> bool:
@@ -182,18 +183,19 @@ async def available() -> bool:
 
 
 async def ensure(name: str, src: str) -> bool:
-    if _registered.get(name) == src:   # already the warm stream for this source — don't replace it (keeps live viewers' stream)
-        return True
-    gen = _gen
-    try:
-        status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
-        if status in (200, 201) and gen == _gen:   # go2rtc wasn't (re)started while we registered
-            _registered[name] = src
+    async with _locks.setdefault(name, asyncio.Lock()):   # serialize per name so the cache matches the PUT go2rtc applied last
+        if _registered.get(name) == src:   # already the warm stream for this source — don't replace it (keeps live viewers' stream)
             return True
-        return False
-    except Exception as e:
-        log.info("go2rtc add stream %s: %s", name, e)
-        return False
+        gen = _gen
+        try:
+            status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
+            if status in (200, 201) and gen == _gen:   # go2rtc wasn't (re)started while we registered
+                _registered[name] = src
+                return True
+            return False
+        except Exception as e:
+            log.info("go2rtc add stream %s: %s", name, e)
+            return False
 
 
 def forget(name: str) -> None:   # drop a registration whose stream turned out to be gone (e.g. an external go2rtc restart)

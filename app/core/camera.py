@@ -139,9 +139,10 @@ class Go2rtc:
         self._task = asyncio.create_task(self._run(go2rtc, env))
 
     async def _run(self, binary: str, env: dict):
+        global _gen
         delay = 2
         while True:
-            _registered.clear()   # a (re)started go2rtc has no runtime streams; re-register on next ensure()
+            _registered.clear(); _gen += 1   # a (re)started go2rtc has no runtime streams; re-register on next ensure()
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     binary, "-config", str(CONF), env=env,
@@ -172,7 +173,8 @@ class Go2rtc:
 
 
 _g = Go2rtc()
-_registered: dict[str, str] = {}   # stream name -> src already registered with the running go2rtc; reused instead of re-PUT, cleared when it (re)starts
+_registered: dict[str, str] = {}   # stream name -> src already registered with the running go2rtc; reused instead of re-PUT
+_gen = 0                           # bumped on every registry clear, so a PUT finishing across a (re)start isn't cached stale
 
 
 async def available() -> bool:
@@ -182,9 +184,10 @@ async def available() -> bool:
 async def ensure(name: str, src: str) -> bool:
     if _registered.get(name) == src:   # already the warm stream for this source — don't replace it (keeps live viewers' stream)
         return True
+    gen = _gen
     try:
         status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
-        if status in (200, 201):
+        if status in (200, 201) and gen == _gen:   # go2rtc wasn't (re)started while we registered
             _registered[name] = src
             return True
         return False
@@ -193,6 +196,11 @@ async def ensure(name: str, src: str) -> bool:
         return False
 
 
+def forget(name: str) -> None:   # drop a registration whose stream turned out to be gone (e.g. an external go2rtc restart)
+    _registered.pop(name, None)
+
+
 async def stop():
-    _registered.clear()
+    global _gen
+    _registered.clear(); _gen += 1
     await _g.stop()

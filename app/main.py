@@ -313,7 +313,8 @@ async def snapshot(request: Request):
                         headers={"Cache-Control": "no-store"})
     src = client.source_url(cam)
     if src and client.cam_mode_at(cam) in ("convert", "hls") and await go2rtc.available():
-        name = go2rtc.stream_name(pid, cam)
+        cams = client.cams_info()
+        name = go2rtc.stream_name(pid, min(max(cam, 0), len(cams) - 1) if cams else 0)   # clamp so a bogus cam index can't spawn unbounded streams
         target = name if await go2rtc.ensure(name, src) else src   # pull from the warm stream, not a cold connect per frame
         try:
             status, headers, data = await http_get(go2rtc.frame_url(target), timeout=8)

@@ -141,6 +141,7 @@ class Go2rtc:
     async def _run(self, binary: str, env: dict):
         delay = 2
         while True:
+            _registered.clear()   # a (re)started go2rtc has no runtime streams; re-register on next ensure()
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     binary, "-config", str(CONF), env=env,
@@ -171,6 +172,7 @@ class Go2rtc:
 
 
 _g = Go2rtc()
+_registered: dict[str, str] = {}   # stream name -> src already registered with the running go2rtc; reused instead of re-PUT, cleared when it (re)starts
 
 
 async def available() -> bool:
@@ -178,13 +180,19 @@ async def available() -> bool:
 
 
 async def ensure(name: str, src: str) -> bool:
+    if _registered.get(name) == src:   # already the warm stream for this source — don't replace it (keeps live viewers' stream)
+        return True
     try:
         status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
-        return status in (200, 201)
+        if status in (200, 201):
+            _registered[name] = src
+            return True
+        return False
     except Exception as e:
         log.info("go2rtc add stream %s: %s", name, e)
         return False
 
 
 async def stop():
+    _registered.clear()
     await _g.stop()

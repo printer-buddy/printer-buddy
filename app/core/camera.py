@@ -139,8 +139,10 @@ class Go2rtc:
         self._task = asyncio.create_task(self._run(go2rtc, env))
 
     async def _run(self, binary: str, env: dict):
+        global _gen
         delay = 2
         while True:
+            _registered.clear(); _gen += 1   # a (re)started go2rtc has no runtime streams; re-register on next ensure()
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     binary, "-config", str(CONF), env=env,
@@ -171,6 +173,9 @@ class Go2rtc:
 
 
 _g = Go2rtc()
+_registered: dict[str, str] = {}   # stream name -> src already registered with the running go2rtc; reused instead of re-PUT
+_gen = 0                           # bumped on every registry clear, so a PUT finishing across a (re)start isn't cached stale
+_locks: dict[str, asyncio.Lock] = {}   # per-name lock so concurrent registrations for a name serialize
 
 
 async def available() -> bool:
@@ -178,13 +183,31 @@ async def available() -> bool:
 
 
 async def ensure(name: str, src: str) -> bool:
-    try:
-        status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
-        return status in (200, 201)
-    except Exception as e:
-        log.info("go2rtc add stream %s: %s", name, e)
-        return False
+    async with _locks.setdefault(name, asyncio.Lock()):   # serialize per name so the cache matches the PUT go2rtc applied last
+        if _registered.get(name) == src:   # already the warm stream for this source — don't replace it (keeps live viewers' stream)
+            return True
+        gen = _gen
+        try:
+            status, _, _ = await http_put(f"{BASE}/api/streams?src={quote(src, safe='')}&name={quote(name)}", timeout=5)
+            if status in (200, 201) and gen == _gen:   # go2rtc wasn't (re)started while we registered
+                _registered[name] = src
+                return True
+            _registered.pop(name, None)   # PUT didn't clearly succeed but may have changed the runtime stream — drop the stale source
+            return False
+        except asyncio.CancelledError:
+            _registered.pop(name, None)   # PUT may have applied before cancellation — don't trust the cache
+            raise
+        except Exception as e:
+            _registered.pop(name, None)   # PUT outcome unknown (e.g. timeout) — don't trust the old cached source
+            log.info("go2rtc add stream %s: %s", name, e)
+            return False
+
+
+def forget(name: str) -> None:   # drop a registration whose stream turned out to be gone (e.g. an external go2rtc restart)
+    _registered.pop(name, None)
 
 
 async def stop():
+    global _gen
+    _registered.clear(); _gen += 1
     await _g.stop()

@@ -2,6 +2,17 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-23 sterling m cameras/warm-snapshot################################
+
+## Faster snapshots for RTSP/HLS cameras on the overview
+
+A snapshot from a convert/HLS camera (one with no direct snapshot URL) now comes from the already-running go2rtc stream instead of cold-connecting to the camera for every frame, so the multi-printer overview's thumbnails update quickly instead of choppily. *Why:* `frame.jpeg` was fetched against the raw source each poll, restarting the pull every time (seconds per frame); pulling from the warm stream returns the latest decoded frame at once.
+
+Lines changed:
+- `app/main.py` — 315–318 ensure the go2rtc stream for the camera and pull the frame from it (falls back to the raw source if the stream can't be started)
+
+################################end of entry################################
+
 ################################2026-11-23 sterling m mmu/afc-lane-extruder################################
 
 ## AFC: report each lane's extruder and tool-loaded state

@@ -313,10 +313,22 @@ async def snapshot(request: Request):
                         headers={"Cache-Control": "no-store"})
     src = client.source_url(cam)
     if src and client.cam_mode_at(cam) in ("convert", "hls") and await go2rtc.available():
+        cams = client.cams_info()
+        name = go2rtc.stream_name(pid, min(max(cam, 0), len(cams) - 1) if cams else 0)   # clamp so a bogus cam index can't spawn unbounded streams
+        target = name if await go2rtc.ensure(name, src) else src   # pull from the warm stream, not a cold connect per frame
         try:
-            status, headers, data = await http_get(go2rtc.frame_url(src), timeout=8)
+            status, headers, data = await http_get(go2rtc.frame_url(target), timeout=8)
+            warm_ok = status == 200
         except Exception as e:
-            return err(f"webcam unreachable: {e}", 502)
+            if target == src:
+                return err(f"webcam unreachable: {e}", 502)
+            warm_ok, status = False, None
+        if not warm_ok and target != src:   # warm stream gone/stalled (e.g. go2rtc restarted) -> drop it and use the raw source
+            go2rtc.forget(name)
+            try:
+                status, headers, data = await http_get(go2rtc.frame_url(src), timeout=8)
+            except Exception as e:
+                return err(f"webcam unreachable: {e}", 502)
         if status != 200:
             return err(f"webcam returned {status}", 502)
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

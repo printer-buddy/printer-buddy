@@ -192,6 +192,7 @@ async def ensure(name: str, src: str) -> bool:
             if status in (200, 201) and gen == _gen:   # go2rtc wasn't (re)started while we registered
                 _registered[name] = src
                 return True
+            _registered.pop(name, None)   # PUT didn't clearly succeed but may have changed the runtime stream — drop the stale source
             return False
         except asyncio.CancelledError:
             _registered.pop(name, None)   # PUT may have applied before cancellation — don't trust the cache

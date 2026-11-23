@@ -193,6 +193,9 @@ async def ensure(name: str, src: str) -> bool:
                 _registered[name] = src
                 return True
             return False
+        except asyncio.CancelledError:
+            _registered.pop(name, None)   # PUT may have applied before cancellation — don't trust the cache
+            raise
         except Exception as e:
             _registered.pop(name, None)   # PUT outcome unknown (e.g. timeout) — don't trust the old cached source
             log.info("go2rtc add stream %s: %s", name, e)

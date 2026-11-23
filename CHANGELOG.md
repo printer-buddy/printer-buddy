@@ -13,6 +13,14 @@ Lines changed:
 
 ################################end of entry################################
 
+################################2026-11-23 sterling m mmu/afc-lane-extruder################################
+
+## AFC: report each lane's extruder and tool-loaded state
+
+The AFC filament view now passes through each lane's `extruder` (which nozzle the lane feeds) and `tool_loaded` flag, so the web UI can tell which filament is loaded into which nozzle on a multi-nozzle toolchanger (e.g. to colour that nozzle's flame). *Why:* the view only reported one overall active slot, so per-nozzle state was invisible.
+
+Lines changed:
+- `app/printers/moonraker.py` — 870 add `extruder` and `tool_loaded` (from the AFC lane status) to each `afc_view` gate
 ################################2026-11-21 sterling m mmu/grams################################
 
 ## MMU: report the grams left per AFC lane

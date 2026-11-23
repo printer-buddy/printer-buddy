@@ -2,6 +2,17 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-21 sterling m mmu/grams################################
+
+## MMU: report the grams left per AFC lane
+
+The AFC filament view now includes each lane's weight in grams, so the slot card can show grams next to the percent. *Why:* the UI only had a percent; the lane's `weight` was already read, just not passed through.
+
+Lines changed:
+- `app/printers/moonraker.py` — 870 add `grams` (rounded lane weight) to each AFC gate
+
+################################end of entry################################
+
 ################################2026-11-21 sterling m mmu/loaded################################
 
 ## MMU: detect the loaded filament on AFC Lite and H2-series Bambu

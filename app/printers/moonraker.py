@@ -47,7 +47,7 @@ FAN_PREFIXES = ("heater_fan ", "controller_fan ", "fan_generic ")
 EXTRA_HEATER = re.compile(r"extruder\d+")
 OUTPUT_PREFIXES = ("output_pin ", "led ", "neopixel ", "dotstar ", "pca9533 ", "pca9632 ")
 FSENSOR_PREFIXES = ("filament_switch_sensor ", "filament_motion_sensor ")
-MMU_FIELDS = ["enabled", "num_gates", "gate", "tool", "unit", "filament", "action", "has_bypass", "is_in_print",
+MMU_FIELDS = ["enabled", "num_gates", "gate", "tool", "unit", "filament", "filament_pos", "action", "has_bypass", "is_in_print",
               "gate_status", "gate_material", "gate_color", "gate_filament_name", "gate_temperature", "gate_remaining"]
 FEATURES = ("quad_gantry_level", "z_tilt", "bed_mesh", "exclude_object", "firmware_retraction", "probe", "bltouch",
             "safe_z_home", "screws_tilt_adjust")
@@ -841,9 +841,10 @@ class MoonrakerClient:
             env = self.status.get(info.get("environment_sensor") or "", {})
             units.append({"name": info.get("name") or f"Unit {u + 1}", "first": int(info.get("first_gate") or 0),
                           "count": int(info.get("num_gates") or count), "temp": env.get("temperature"),
-                          "humidity": env.get("humidity")})
+                          "humidity": env.get("humidity"), "crossload": bool(info.get("can_crossload"))})
         return {"enabled": m.get("enabled", True), "gate": m.get("gate"), "tool": m.get("tool"),
-                "loaded": m.get("filament") == "Loaded", "action": m.get("action"), "bypass": bool(m.get("has_bypass")),
+                "loaded": m.get("filament") == "Loaded", "filament_pos": m.get("filament_pos"),
+                "action": m.get("action"), "bypass": bool(m.get("has_bypass")),
                 "units": units, "gates": gates}
 
     def afc_view(self) -> dict | None:
@@ -868,6 +869,8 @@ class MoonrakerClient:
                 gates.append({"status": 1 if o.get("prep") or o.get("load") else 0, "material": o.get("material") or "",
                               "color": color(o.get("color")), "name": o.get("filament_name") or "", "label": str(n),
                               "extruder": o.get("extruder"), "tool_loaded": bool(o.get("tool_loaded")),
+                              "load": bool(o.get("load")), "prep": bool(o.get("prep")), "map": o.get("map"),
+                              "runout": o.get("runout_lane"),
                               "temp": o.get("extruder_temp"), "grams": round(w) if isinstance(w, (int, float)) else None,
                               "remaining": max(0, min(100, round(w / full * 100))) if isinstance(w, (int, float)) and full else None})
                 if n == cur:

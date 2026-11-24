@@ -2,6 +2,8 @@
 
 # Printer Buddy (Lite, remote mode)
 
+**Website:** [printerbuddy.ca](https://printerbuddy.ca) · **Docs:** [docs.printerbuddy.ca](https://docs.printerbuddy.ca)
+
 A self-hosted printer monitor for Klipper printers. Run it on a Pi, a NAS, a home server or on a printer itself,
 and pick which parts to install and how heavy each one is. It finds Moonraker printers on the network, you choose
 which ones to monitor, and it subscribes to only those over Moonraker's WebSocket API.

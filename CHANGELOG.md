@@ -2,6 +2,17 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-24 sterling m docs/readme-website################################
+
+## README: link the website and docs
+
+The README now links the new website and the docs site under its title. *Why:* neither printerbuddy.ca nor docs.printerbuddy.ca was linked from the repo.
+
+Lines changed:
+- `README.md` — 5 add the Website and Docs links
+
+################################end of entry################################
+
 ################################2026-11-23 sterling m cameras/warm-snapshot################################
 
 ## Faster snapshots for RTSP/HLS cameras on the overview

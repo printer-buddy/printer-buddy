@@ -2,6 +2,17 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-24 sterling m mmu/lane-actions################################
+
+## MMU: pass through the lane and gate state the per-lane actions need
+
+The MMU view now includes, for AFC lanes, the separate `load` and `prep` flags, the mapped tool (`map`) and the runout lane (`runout`); for Happy Hare, `filament_pos` and each unit's `crossload` flag. *Why:* the web UI's new per-lane menu greys actions out the way Fluidd and Mainsail do, which needs these fields.
+
+Lines changed:
+- `app/printers/moonraker.py` — 50 subscribe to `filament_pos` in `MMU_FIELDS`; 844 add each unit's `crossload`; 846 add `filament_pos` to the Happy Hare view; 873–874 add `load`, `prep`, `map` and `runout` to each AFC lane
+
+################################end of entry################################
+
 ################################2026-11-24 sterling m docs/readme-website################################
 
 ## README: link the website and docs

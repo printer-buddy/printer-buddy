@@ -301,6 +301,7 @@ class Collector:
                 item["status"], item["sent_at"] = "sent", time.time()
                 self._write(item)
                 img.unlink(missing_ok=True)
+                self.trim()
                 self.last_error = None
             elif status == 429:
                 self._pause_until = time.time() + 3600

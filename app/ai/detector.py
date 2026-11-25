@@ -23,7 +23,7 @@ from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
-DEFAULTS = {"ai_threshold": 0.6, "ai_interval": 10, "ai_hold": 3, "ai_cooldown": 10}
+DEFAULTS = {"ai_threshold": 0.6, "ai_interval": 10, "ai_hold": 3, "ai_cooldown": 10, "ai_keep": 500}
 CHOICES = {"ai_threshold": (0.4, 0.5, 0.6, 0.7, 0.8), "ai_interval": (5, 10, 20, 30),
            "ai_hold": (1, 2, 3, 5), "ai_cooldown": (5, 10, 20, 30)}
 MODES = ("off", "alert", "pause")

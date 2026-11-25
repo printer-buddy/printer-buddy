@@ -144,6 +144,9 @@ class Collector:
         self.rejected = None
         if not self.enabled() or not jpeg:
             return None
+        if not self.sharing():
+            self.rejected = "Turn on sending photos to the Printer Buddy project to save photos for the AI."
+            return None
         try:
             data = self._clean_jpeg(jpeg)
         except Exception as e:
@@ -158,14 +161,17 @@ class Collector:
         if label:
             self._judge(item)
         self._write(item)
-        self._trim()
+        self.trim()
         if status == "ready":
             self.kick()
         return item
 
-    def _trim(self):
-        items = self.items()
-        for it in items[KEEP:]:
+    def trim(self):
+        keep = int(self.store.settings().get("ai_keep", KEEP))
+        photos, records = [], []
+        for it in self.items():
+            (photos if (self.root / f"{it['id']}.jpg").exists() else records).append(it)
+        for it in photos[keep:] + records[keep:]:
             self.delete(it["id"])
 
     def delete(self, iid: str) -> bool:
@@ -208,7 +214,7 @@ class Collector:
         self.job[pid] = []
 
     def wants_print_snapshot(self, pid: int, progress: float) -> float | None:
-        if not self.enabled():
+        if not self.enabled() or not self.sharing():
             return None
         taken = self.marks.setdefault(pid, set())
         for m in PRINT_MARKS:
@@ -295,6 +301,7 @@ class Collector:
                 item["status"], item["sent_at"] = "sent", time.time()
                 self._write(item)
                 img.unlink(missing_ok=True)
+                self.trim()
                 self.last_error = None
             elif status == 429:
                 self._pause_until = time.time() + 3600

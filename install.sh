@@ -244,12 +244,6 @@ UNIT
   sudo systemctl daemon-reload
 }
 
-ensure_ffmpeg() {
-  [ "$(part_value "${PARTS[2]}")" = "timelapse" ] || return 0
-  command -v ffmpeg >/dev/null && return 0
-  echo "Installing ffmpeg (needed for timelapses)..."
-  sudo apt-get update -q && sudo apt-get install -y -q ffmpeg || echo "Couldn't install ffmpeg; timelapses will save pictures but no video."
-}
 
 ai_model() {
   local f; f="$(ls -1t "$DIR"/data/ai/"$(part_value "${PARTS[1]}")"-*/model.json 2>/dev/null | head -n1)"
@@ -276,16 +270,6 @@ ensure_streamer() { python3 "$UPDATER" streamer; }
 camera_setup() {
   getent group printerbuddy >/dev/null 2>&1 || sudo groupadd printerbuddy
   sudo usermod -aG printerbuddy,video "$RUN_USER" 2>/dev/null || true
-  local pkgs=""
-  case "$(get_env PB_STREAM)" in
-    light) pkgs="v4l-utils" ;;
-    basic) pkgs="ustreamer v4l-utils" ;;
-    advanced) pkgs="ustreamer ffmpeg v4l-utils" ;;
-  esac
-  if [ -n "$pkgs" ]; then
-    echo "Installing camera packages ($pkgs)..."
-    sudo apt-get install -y -q $pkgs || { sudo apt-get update -q && sudo apt-get install -y -q $pkgs; } || echo "Some camera packages didn't install."
-  fi
   if systemctl list-unit-files printer-buddy-streamer.service >/dev/null 2>&1; then
     echo "Moving the camera streamer under Printer Buddy..."
     sudo systemctl disable --now printer-buddy-streamer >/dev/null 2>&1 || true
@@ -314,20 +298,26 @@ do_install() {
       || echo "Couldn't switch to $b, staying on $(branch)."
   fi
   fetch_parts || return 1
-  if ! python3 -c "import venv, ensurepip" 2>/dev/null; then
-    echo "Installing python3-venv..."
-    sudo apt-get update && sudo apt-get install -y python3-venv || { echo "Couldn't install python3-venv."; return 1; }
+  if [ ! -d "$DIR/.venv" ]; then
+    if python3 -c "import venv, ensurepip" 2>/dev/null; then
+      python3 -m venv "$DIR/.venv" || return 1
+    else
+      python3 -m venv --without-pip "$DIR/.venv" \
+        && curl -fsSL -o "$DIR/.venv/get-pip.py" https://bootstrap.pypa.io/get-pip.py \
+        && "$DIR/.venv/bin/python" "$DIR/.venv/get-pip.py" -q \
+        || { rm -rf "$DIR/.venv"; echo "Couldn't set up the Python environment."; return 1; }
+      rm -f "$DIR/.venv/get-pip.py"
+    fi
   fi
-  [ -d "$DIR/.venv" ] || python3 -m venv "$DIR/.venv" || return 1
   "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
   mkdir -p "$DIR/data"; chmod 700 "$DIR/data" 2>/dev/null || true
-  ensure_ffmpeg
   ensure_ai
   choose_port || return 1
+  user_id >/dev/null || true
   write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
   moonraker_service add
-  install_helper && camera_setup && ensure_streamer
+  install_helper && camera_setup && legacy_cleanup; ensure_streamer
   hard_restart || return 1
   echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
 }
@@ -343,6 +333,8 @@ do_update() {
 after_code_change() {
   installed && install_helper
   installed && camera_setup
+  installed && legacy_cleanup
+  user_id >/dev/null || true
   python3 "$UPDATER" after || echo "Some parts didn't update, see above."
   if installed; then write_unit; hard_restart || return 1; fi
   return 0
@@ -401,49 +393,89 @@ restore_backup() {
 
 share_domain() { local d; d="$(get_env PB_SHARE_DOMAIN)"; echo "${d:-printerbuddy.stream}"; }
 tunnel_state() {
-  if ! systemctl list-unit-files cloudflared.service >/dev/null 2>&1 || ! systemctl cat cloudflared >/dev/null 2>&1; then echo "not set up"
-  elif systemctl is-active --quiet cloudflared; then echo "running"
-  else echo "stopped"; fi
+  if pgrep -u "$RUN_USER" -f "$DIR/data/streamer-bin/cloudflared" >/dev/null 2>&1; then echo "running"
+  elif [ -n "$(get_env PB_TUNNEL_KEY)" ]; then echo "set up"
+  else echo "not set up"; fi
+}
+root_tunnel_token() {
+  local line
+  line="$(systemctl cat cloudflared 2>/dev/null | grep -m1 '^ExecStart=')" || return 1
+  if [[ "$line" =~ --token-file[=\ ]+([^ ]+) ]]; then sudo cat "${BASH_REMATCH[1]}" 2>/dev/null
+  elif [[ "$line" =~ --token[=\ ]+([^ ]+) ]]; then echo "${BASH_REMATCH[1]}"
+  else return 1; fi
+}
+legacy_cleanup() {
+  if systemctl cat cloudflared >/dev/null 2>&1 && [ -n "$(get_env PB_TUNNEL_KEY)" ]; then
+    local theirs mine tfile
+    theirs="$(root_tunnel_token)"; mine="$(json_get token <<<"$(tunnel_call POST 2>/dev/null)")"
+    if [ -n "$theirs" ] && [ "$theirs" = "$mine" ]; then
+      echo "Moving the share tunnel under Printer Buddy..."
+      tfile="$(systemctl cat cloudflared 2>/dev/null | grep -m1 '^ExecStart=' | sed -n 's/.*--token-file[= ]\+\([^ ]*\).*/\1/p')"
+      sudo cloudflared service uninstall >/dev/null 2>&1 || { sudo systemctl disable --now cloudflared >/dev/null 2>&1; sudo rm -f /etc/systemd/system/cloudflared.service; }
+      [ -n "$tfile" ] && [ "$(sudo cat "$tfile" 2>/dev/null)" = "$mine" ] && sudo rm -f "$tfile"
+      sudo systemctl daemon-reload
+    fi
+  fi
+  if [ -d /usr/local/lib/print-buddy-streamer ]; then
+    echo "Removing the old camera streamer files..."
+    sudo rm -rf /usr/local/lib/print-buddy-streamer
+  fi
+  local g=/usr/local/bin/go2rtc home
+  home="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+  if [ -f "$g" ] && [ "$(get_env PB_STREAM)" = advanced ] && ! dpkg -S "$g" >/dev/null 2>&1 \
+     && ! grep -rlsF "$g" /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system "$home/.config/systemd/user" 2>/dev/null | grep -q . \
+     && ! pgrep -f "$g" >/dev/null 2>&1; then
+    echo "Removing the old go2rtc in /usr/local/bin (Printer Buddy keeps its own copy now)..."
+    sudo rm -f "$g"
+  fi
+  local pkg logs
+  logs="$(ls /var/log/apt/history.log* 2>/dev/null)"
+  [ -n "$logs" ] || return 0
+  for pkg in ffmpeg ustreamer v4l-utils python3-venv; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || continue
+    zgrep -hE "^Commandline: apt-get install -y( -q)?( (ffmpeg|ustreamer|v4l-utils|python3-venv))+$" $logs 2>/dev/null \
+      | grep -qE "( )$pkg( |$)" || continue
+    [ "$(apt-get -s remove "$pkg" 2>/dev/null | grep -c '^Remv ')" = 1 ] || continue
+    echo "Removing $pkg (Printer Buddy installed it; it now keeps its own copy)..."
+    sudo apt-get remove -y -q "$pkg" >/dev/null || echo "Couldn't remove $pkg."
+  done
 }
 user_id() {
-  local uid; uid="$(get_env PB_USER_ID)"
-  if [ -z "$uid" ]; then
-    local port; port="$(get_env PORT)"
-    uid="$(curl -fsS --max-time 2 "http://127.0.0.1:${port:-8080}/api/share/user-id" 2>/dev/null | sed -n 's/.*"user_id": *"\([0-9]*\)".*/\1/p')"
-    [ -n "$uid" ] || uid="$(( (RANDOM * 32768 + RANDOM) % 9000000 + 1000000 ))"
-    set_env PB_USER_ID "$uid"
+  local uid key old body resp code fresh=""
+  uid="$(get_env PB_USER_ID)"; key="$(get_env PB_BOX_KEY)"
+  if [ -z "$uid" ] || [ -z "$key" ]; then
+    if [ -z "$uid" ]; then
+      local port; port="$(get_env PORT)"
+      uid="$(curl -fsS --max-time 2 "http://127.0.0.1:${port:-8080}/api/share/user-id" 2>/dev/null | sed -n 's/.*"user_id": *"\([0-9]*\)".*/\1/p')"
+    fi
+    old="$(get_env PB_TUNNEL_KEY)"
+    body="{${uid:+\"id\": \"$uid\"}${uid:+${old:+, \"key\": \"$old\"}}}"
+    resp="$(curl -sS --max-time 30 -X POST -H "content-type: application/json" -d "$body" -w '\n%{http_code}' "$(box_api)" 2>&1)" \
+      || { echo "Couldn't reach $(box_api) to get a box ID: $resp" >&2; return 1; }
+    code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
+    if [ -n "$uid" ] && { [ "$code" = 403 ] || [ "$code" = 409 ]; }; then
+      echo "Box ID $uid belongs to another box or its key is lost, getting a new box ID." >&2
+      resp="$(curl -sS --max-time 30 -X POST -H "content-type: application/json" -d '{}' -w '\n%{http_code}' "$(box_api)" 2>&1)" \
+        || { echo "Couldn't reach $(box_api) to get a box ID: $resp" >&2; return 1; }
+      code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"; fresh=1
+    fi
+    [ "$code" = 201 ] || { echo "Couldn't get a box ID: $(json_get error <<<"$resp")" >&2; return 1; }
+    uid="$(json_get id <<<"$resp")"; key="$(json_get key <<<"$resp")"
+    [ -n "$uid" ] && [ -n "$key" ] || { echo "The server didn't send a box ID." >&2; return 1; }
+    set_env PB_USER_ID "$uid"; set_env PB_BOX_KEY "$key"
+    [ -z "$fresh" ] || set_env PB_TUNNEL_KEY ""
   fi
   echo "$uid"
 }
-install_cloudflared() {
-  command -v cloudflared >/dev/null && return 0
-  echo "Installing cloudflared (Cloudflare's tunnel program)..."
-  local arch tmp; arch="$(dpkg --print-architecture 2>/dev/null)"
-  case "$arch" in amd64|arm64|armhf|i386) ;; *) echo "Unsupported CPU type: ${arch:-unknown}"; return 1 ;; esac
-  tmp="$(mktemp --suffix=.deb)"
-  curl -fsSL -o "$tmp" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb" \
-    && sudo dpkg -i "$tmp" >/dev/null || { rm -f "$tmp"; echo "Couldn't install cloudflared."; return 1; }
-  rm -f "$tmp"
-}
-start_tunnel() {
-  if [ "$(tunnel_state)" != "not set up" ]; then sudo cloudflared service uninstall >/dev/null 2>&1; fi
-  if sudo cloudflared service install "$1" >/dev/null 2>&1; then
-    sleep 3
-    if systemctl is-active --quiet cloudflared; then echo "Tunnel is running."
-    else echo "The tunnel was set up but isn't running yet. See: journalctl -u cloudflared -n 30"; fi
-  else
-    echo "cloudflared didn't accept that token. Nothing else was changed."; return 1
-  fi
-  return 0
-}
 tunnel_api() { local a; a="$(get_env PB_TUNNEL_API)"; echo "${a:-https://www.$(share_domain)/api/tunnel}"; }
+box_api() { local a; a="$(tunnel_api)"; echo "${a%/tunnel}/box"; }
 json_get() { python3 -c 'import sys, json
 try: print(json.load(sys.stdin).get(sys.argv[1]) or "")
 except Exception: print("")' "$1"; }
 tunnel_call() {
   local method="$1" uid port key body resp code err
-  uid="$(user_id)"; port="$(current_port)"; key="$(get_env PB_TUNNEL_KEY)"
-  body="{\"id\": \"$uid\", \"port\": $port${key:+, \"key\": \"$key\"}}"
+  uid="$(user_id)" || return 1; port="$(current_port)"; key="$(get_env PB_BOX_KEY)"
+  body="{\"id\": \"$uid\", \"port\": $port, \"key\": \"$key\"}"
   resp="$(curl -sS --max-time 90 -X "$method" -H "content-type: application/json" -d "$body" -w '\n%{http_code}' "$(tunnel_api)" 2>&1)" \
     || { echo "Couldn't reach $(tunnel_api): $resp" >&2; return 1; }
   code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
@@ -454,21 +486,20 @@ tunnel_call() {
   echo "$resp"
 }
 auto_tunnel() {
-  install_cloudflared || return 1
   echo "Setting up wireless sharing for box $(user_id) on port $(current_port)..."
-  local resp token key
+  local resp token
   resp="$(tunnel_call POST)" || return 1
-  token="$(json_get token <<<"$resp")"; key="$(json_get key <<<"$resp")"
+  token="$(json_get token <<<"$resp")"
   [ -n "$token" ] || { echo "The setup server didn't send a tunnel token."; return 1; }
-  [ -n "$key" ] && set_env PB_TUNNEL_KEY "$key"
-  start_tunnel "$token" || return 1
+  set_env PB_TUNNEL_KEY "$(get_env PB_BOX_KEY)"
   echo "Share links now work from anywhere: https://www.$(share_domain)/share/user/$(user_id)/..."
+  echo "Printer Buddy runs the tunnel while a share link is active."
 }
 remove_tunnel() {
   local key; key="$(get_env PB_TUNNEL_KEY)"
-  [ "$(tunnel_state)" = "not set up" ] && [ -z "$key" ] && { echo "No tunnel is set up."; return 0; }
+  [ "$(tunnel_state)" = "not set up" ] && { echo "No tunnel is set up."; return 0; }
   [ -n "${NOASK:-}" ] || yesno "Remove the tunnel? Share links will stop working from outside." || { echo "Nothing changed."; return 0; }
-  [ "$(tunnel_state)" != "not set up" ] && sudo cloudflared service uninstall >/dev/null 2>&1 && echo "Tunnel stopped on this box."
+  pkill -u "$RUN_USER" -f "$DIR/data/streamer-bin/cloudflared" 2>/dev/null && echo "Tunnel stopped on this box."
   if [ -n "$key" ]; then
     echo "Removing it from the server..."
     local i; for i in 1 2 3; do
@@ -593,7 +624,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ffmpeg; ensure_ai; install_helper && camera_setup && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then fetch_parts; ensure_ai; install_helper && camera_setup && ensure_streamer; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         sync_tunnel
         return ;;
     esac

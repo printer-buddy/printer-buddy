@@ -20,7 +20,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -41,13 +40,12 @@ _ffmpeg_tried = False
 async def ensure_ffmpeg():
     """The camera of an X1 or H2 is a video stream that only ffmpeg can turn into pictures: install it once if it's missing."""
     global _ffmpeg_tried
-    if shutil.which("ffmpeg") or _ffmpeg_tried:
+    if _ffmpeg_tried:
         return
     _ffmpeg_tried = True
-    from ..core import updater
-    log.info("installing ffmpeg for the Bambu camera")
-    ok = await asyncio.to_thread(updater.root, "pkg", "ffmpeg")
-    log.info("ffmpeg installed" if ok and shutil.which("ffmpeg") else "couldn't install ffmpeg: run 'sudo apt install ffmpeg' on the box")
+    from ..core.camera import _ensure_ffmpeg
+    path = await asyncio.to_thread(_ensure_ffmpeg)
+    log.info("ffmpeg ready for the Bambu camera" if path else "couldn't get ffmpeg for the Bambu camera")
 
 
 def data_dir() -> Path:

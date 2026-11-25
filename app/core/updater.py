@@ -23,6 +23,7 @@ Nothing here needs root; the camera streamer runs under Printer Buddy (see app/c
 from __future__ import annotations
 
 import glob
+import hashlib
 import io
 import json
 import os
@@ -53,6 +54,25 @@ _releases: list | None = None
 
 def say(msg: str):
     print(msg, flush=True)
+
+
+def check_sha256(data: bytes, digest: str | None, what: str) -> bytes:
+    if not (digest or "").startswith("sha256:"):
+        raise ValueError(f"no checksum listed for {what}")
+    if hashlib.sha256(data).hexdigest() != digest[7:]:
+        raise ValueError(f"{what} doesn't match its checksum")
+    return data
+
+
+def github_asset(repo: str, name: str, tag: str | None = None, timeout: int = 300) -> bytes:
+    """Download a release file (latest release when no tag) and check it against the sha256 GitHub lists for it."""
+    url = f"https://api.github.com/repos/{repo}/releases/" + (f"tags/{tag}" if tag else "latest")
+    rel = json.load(urllib.request.urlopen(urllib.request.Request(url, headers=HDR), timeout=30))
+    a = next((x for x in rel.get("assets", []) if x.get("name") == name), None)
+    if not a:
+        raise ValueError(f"{rel.get('tag_name', repo)} has no {name}")
+    data = urllib.request.urlopen(urllib.request.Request(a["browser_download_url"], headers=HDR), timeout=timeout).read()
+    return check_sha256(data, a.get("digest"), name)
 
 
 def env(key: str) -> str:
@@ -172,7 +192,8 @@ def fetch_part(name: str, asset: str, inner: str, dest: Path) -> bool:
         return True
     try:
         data = urllib.request.urlopen(urllib.request.Request(a["browser_download_url"], headers=HDR), timeout=300).read()
-    except OSError as e:
+        check_sha256(data, a.get("digest"), asset)
+    except (OSError, ValueError) as e:
         say(f"Couldn't download the {name} part ({e}), kept what was there.")
         return False
     tmp = Path(tempfile.mkdtemp())
@@ -251,6 +272,55 @@ def _arch(table: dict) -> str | None:
     return table.get(platform.machine())
 
 
+def _deb_extract(pkg: str, tmp: Path) -> Path | None:
+    if subprocess.run(["apt-get", "download", pkg], cwd=tmp, capture_output=True).returncode != 0:
+        return None
+    debs = sorted(tmp.glob(f"{pkg}_*.deb"))
+    out = tmp / pkg
+    if not debs or subprocess.run(["dpkg-deb", "-x", str(debs[-1]), str(out)]).returncode != 0:
+        return None
+    return out
+
+
+def _installed(pkg: str) -> bool:
+    st = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg], capture_output=True, text=True).stdout
+    return st.strip() == "install ok installed"
+
+
+def fetch_ustreamer() -> bool:
+    """ustreamer has no ready-made download, so take the box's own distro package (apt-get download needs no root),
+    unpack its program into data/streamer-bin and any libraries the box doesn't have into data/streamer-bin/lib."""
+    dest = STREAM_BIN / "ustreamer"
+    if dest.exists():
+        return True
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        root = _deb_extract("ustreamer", tmp)
+        if not root or not (root / "usr" / "bin" / "ustreamer").exists():
+            say("Couldn't download ustreamer.")
+            return bool(shutil.which("ustreamer"))
+        todo, seen = ["ustreamer"], {"ustreamer"}
+        while todo:
+            deps = subprocess.run(["apt-cache", "depends", "--no-recommends", "--no-suggests", "--no-enhances",
+                                   "--no-breaks", "--no-conflicts", "--no-replaces", todo.pop()],
+                                  capture_output=True, text=True).stdout
+            for name in re.findall(r"^\s*\|?(?:Pre)?Depends: ([^\s<>]+)$", deps, re.M):
+                if name in seen or _installed(name):
+                    continue
+                seen.add(name)
+                lib = _deb_extract(name, tmp)
+                if not lib:
+                    say(f"Couldn't download {name}, which ustreamer needs.")
+                    return bool(shutil.which("ustreamer"))
+                (STREAM_BIN / "lib").mkdir(parents=True, exist_ok=True)
+                for so in lib.rglob("*.so*"):
+                    shutil.copy2(so, STREAM_BIN / "lib" / so.name, follow_symlinks=False)
+                todo.append(name)
+        STREAM_BIN.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "usr" / "bin" / "ustreamer", dest)
+    return True
+
+
 def fetch_stream_bins(tier: str) -> bool:
     STREAM_BIN.mkdir(parents=True, exist_ok=True)
     if tier == "light":
@@ -260,9 +330,8 @@ def fetch_stream_bins(tier: str) -> bool:
             return True
         dest = STREAM_BIN / "mjpg-streamer"
         dest.mkdir(parents=True, exist_ok=True)
-        url = f"https://github.com/printer-buddy/print-buddy-streamer/releases/download/mjpg-streamer/mjpg-streamer-{a}.tar.gz"
         try:
-            data = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "printer-buddy"}), timeout=120).read()
+            data = github_asset("printer-buddy/print-buddy-streamer", f"mjpg-streamer-{a}.tar.gz", "mjpg-streamer", 120)
             with tarfile.open(fileobj=io.BytesIO(data)) as t:
                 members = []
                 for m in t.getmembers():
@@ -274,16 +343,17 @@ def fetch_stream_bins(tier: str) -> bool:
         except Exception as e:
             say(f"Couldn't download mjpg-streamer: {e}")
             return False
-    elif tier == "advanced":
-        if not shutil.which("go2rtc") and not (STREAM_BIN / "go2rtc").exists():
+        return True
+    if not fetch_ustreamer():
+        return False
+    if tier == "advanced":
+        if not (STREAM_BIN / "go2rtc").exists():
             a = _arch({"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64", "armv7l": "arm", "armv6l": "armv6"})
             if not a:
                 say(f"No go2rtc build for {platform.machine()}.")
                 return True
             try:
-                data = urllib.request.urlopen(urllib.request.Request(
-                    f"https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_{a}",
-                    headers={"User-Agent": "printer-buddy"}), timeout=120).read()
+                data = github_asset("AlexxIT/go2rtc", f"go2rtc_linux_{a}", timeout=120)
                 (STREAM_BIN / "go2rtc").write_bytes(data)
                 (STREAM_BIN / "go2rtc").chmod(0o755)
             except Exception as e:
@@ -311,8 +381,6 @@ def ensure_streamer() -> bool:
 
 
 def ensure_packages() -> bool:
-    if env("PB_VIDEO") == "timelapse" and not shutil.which("ffmpeg"):
-        say("ffmpeg isn't installed; timelapses will save pictures but no video. Re-run ./install.sh to add it.")
     return True
 
 

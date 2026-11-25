@@ -58,9 +58,13 @@ class Streamer:
     def _env(self) -> dict:
         return {**os.environ,
                 "PB_MJPG_DIR": str(BIN / "mjpg-streamer"),
-                "PATH": f"{BIN}{os.pathsep}{os.environ.get('PATH', '')}"}
+                "PATH": f"{BIN}{os.pathsep}{os.environ.get('PATH', '')}",
+                "LD_LIBRARY_PATH": f"{BIN / 'lib'}{os.pathsep}{os.environ.get('LD_LIBRARY_PATH', '')}"}
 
     async def _run(self):
+        if os.getenv("PB_STREAM", "").strip().lower() == "advanced":
+            from .camera import _ensure_ffmpeg
+            await asyncio.to_thread(_ensure_ffmpeg)
         delay = 2
         while True:
             if not CONF.exists() or not PYTHON.exists() or not STREAMER_DIR.exists():

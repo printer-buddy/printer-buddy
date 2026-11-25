@@ -132,6 +132,10 @@ class Store:
             "SELECT * FROM shares WHERE printer_id=? AND revoked=0 AND (expires_at IS NULL OR expires_at > ?) "
             "ORDER BY created_at DESC", (pid, now))]
 
+    def active_share_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM shares WHERE revoked=0 AND (expires_at IS NULL OR expires_at > ?)",
+                               (time.time(),)).fetchone()[0]
+
     def end_print_shares(self, pid: int):
         with self.db:
             self.db.execute("UPDATE shares SET revoked=1 WHERE printer_id=? AND until_print=1 AND revoked=0", (pid,))

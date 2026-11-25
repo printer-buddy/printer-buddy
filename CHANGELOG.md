@@ -6,12 +6,12 @@ All changes to Printer Buddy, newest first.
 
 ## AI photos: only kept while sharing is on, with a set number to keep
 
-No AI photos are saved while "Send my labelled photos to the Printer Buddy project" is off: no print snapshots (10/50/90% or failed), no alert photos and no "Save for AI…" (which now says to turn sharing on). While it's on, the newest `ai_keep` photos are kept (a new AI setting, a whole number from 10 to 500, default 500) instead of a fixed 500. Only records that still hold a photo count toward `ai_keep`, so records already sent (photo deleted after upload) can't push out unsent photos; sent records are capped separately at the newest `ai_keep`. Photos saved before are left until they're deleted. *Why:* photos piled up on the server even with sharing off, when nothing used them.
+No AI photos are saved while "Send my labelled photos to the Printer Buddy project" is off: no print snapshots (10/50/90% or failed), no alert photos and no "Save for AI…" (which now says to turn sharing on). While it's on, the newest `ai_keep` photos are kept (a new AI setting, a whole number from 10 to 500, default 500) instead of a fixed 500. Only records that still hold a photo count toward `ai_keep`, so records already sent (photo deleted after upload) can't push out unsent photos; sent records are capped separately at the newest `ai_keep`. Saving a new `ai_keep` trims to it straight away, even with sharing off; otherwise photos saved before are left until they're deleted. *Why:* photos piled up on the server even with sharing off, when nothing used them.
 
 Lines changed:
-- `app/ai/collect.py` — 147–149 `add()` saves nothing while sharing is off and says why; 169–175 `_trim()` keeps the newest `ai_keep` records with a photo and, separately, the newest `ai_keep` records without one (falls back to 500); 217 `wants_print_snapshot()` takes no print snapshots while sharing is off
+- `app/ai/collect.py` — 147–149 `add()` saves nothing while sharing is off and says why; 164, 169–175 public `trim()` keeps the newest `ai_keep` records with a photo and, separately, the newest `ai_keep` records without one (falls back to 500); 217 `wants_print_snapshot()` takes no print snapshots while sharing is off
 - `app/ai/detector.py` — 26 add `ai_keep: 500` to the AI settings defaults
-- `app/main.py` — 485–488 `ai_settings` accepts `ai_keep` as a whole number from 10 to 500
+- `app/main.py` — 485–488 `ai_settings` accepts `ai_keep` as a whole number from 10 to 500; 490–491 trim the AI photos when `ai_keep` is saved
 
 ################################end of entry################################
 

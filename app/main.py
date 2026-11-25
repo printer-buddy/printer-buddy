@@ -487,6 +487,8 @@ async def ai_settings(request: Request):
                 return err("bad value for ai_keep")
             values["ai_keep"] = b["ai_keep"]
         store.save_settings(values)
+        if "ai_keep" in values:
+            manager.collect.trim()
         if "ai_contribute" in b:
             manager.collect.set_sharing(bool(b["ai_contribute"]))
     return JSONResponse({**manager.ai.settings(), "choices": ai_mod.CHOICES, "modes": ai_mod.MODES,

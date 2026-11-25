@@ -161,12 +161,12 @@ class Collector:
         if label:
             self._judge(item)
         self._write(item)
-        self._trim()
+        self.trim()
         if status == "ready":
             self.kick()
         return item
 
-    def _trim(self):
+    def trim(self):
         keep = int(self.store.settings().get("ai_keep", KEEP))
         photos, records = [], []
         for it in self.items():

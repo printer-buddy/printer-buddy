@@ -167,8 +167,11 @@ class Collector:
         return item
 
     def _trim(self):
-        items = self.items()
-        for it in items[int(self.store.settings().get("ai_keep", KEEP)):]:
+        keep = int(self.store.settings().get("ai_keep", KEEP))
+        photos, records = [], []
+        for it in self.items():
+            (photos if (self.root / f"{it['id']}.jpg").exists() else records).append(it)
+        for it in photos[keep:] + records[keep:]:
             self.delete(it["id"])
 
     def delete(self, iid: str) -> bool:

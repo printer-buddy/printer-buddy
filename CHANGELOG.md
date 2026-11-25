@@ -2,6 +2,19 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-24 sterling m ai/photos################################
+
+## AI photos: only kept while sharing is on, with a set number to keep
+
+No AI photos are saved while "Send my labelled photos to the Printer Buddy project" is off: no print snapshots (10/50/90% or failed), no alert photos and no "Save for AI…" (which now says to turn sharing on). While it's on, the newest `ai_keep` photos are kept (a new AI setting, a whole number from 10 to 500, default 500) instead of a fixed 500. Photos saved before are left until they're deleted. *Why:* photos piled up on the server even with sharing off, when nothing used them.
+
+Lines changed:
+- `app/ai/collect.py` — 147–149 `add()` saves nothing while sharing is off and says why; 171 `_trim()` keeps `ai_keep` photos (falls back to 500); 214 `wants_print_snapshot()` takes no print snapshots while sharing is off
+- `app/ai/detector.py` — 26 add `ai_keep: 500` to the AI settings defaults
+- `app/main.py` — 485–488 `ai_settings` accepts `ai_keep` as a whole number from 10 to 500
+
+################################end of entry################################
+
 ################################2026-11-24 sterling m mmu/lane-actions################################
 
 ## MMU: pass through the lane and gate state the per-lane actions need

@@ -482,6 +482,10 @@ async def ai_settings(request: Request):
                 if b[k] not in choices:
                     return err(f"bad value for {k}")
                 values[k] = b[k]
+        if "ai_keep" in b:
+            if type(b["ai_keep"]) is not int or not 10 <= b["ai_keep"] <= 500:
+                return err("bad value for ai_keep")
+            values["ai_keep"] = b["ai_keep"]
         store.save_settings(values)
         if "ai_contribute" in b:
             manager.collect.set_sharing(bool(b["ai_contribute"]))

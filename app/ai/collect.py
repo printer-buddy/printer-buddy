@@ -144,6 +144,9 @@ class Collector:
         self.rejected = None
         if not self.enabled() or not jpeg:
             return None
+        if not self.sharing():
+            self.rejected = "Turn on sending photos to the Printer Buddy project to save photos for the AI."
+            return None
         try:
             data = self._clean_jpeg(jpeg)
         except Exception as e:
@@ -165,7 +168,7 @@ class Collector:
 
     def _trim(self):
         items = self.items()
-        for it in items[KEEP:]:
+        for it in items[int(self.store.settings().get("ai_keep", KEEP)):]:
             self.delete(it["id"])
 
     def delete(self, iid: str) -> bool:
@@ -208,7 +211,7 @@ class Collector:
         self.job[pid] = []
 
     def wants_print_snapshot(self, pid: int, progress: float) -> float | None:
-        if not self.enabled():
+        if not self.enabled() or not self.sharing():
             return None
         taken = self.marks.setdefault(pid, set())
         for m in PRINT_MARKS:

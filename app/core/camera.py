@@ -20,6 +20,7 @@ import platform
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
@@ -55,6 +56,18 @@ def _fetch(url: str, timeout: int = 180) -> bytes:
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "printer-buddy"}), timeout=timeout).read()
 
 
+def _publish(dest: Path, data: bytes):
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _ensure_go2rtc() -> str | None:
     dest = BIN / "go2rtc"
     if dest.exists():
@@ -65,8 +78,7 @@ def _ensure_go2rtc() -> str | None:
         return shutil.which("go2rtc")
     try:
         BIN.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(github_asset("AlexxIT/go2rtc", f"go2rtc_linux_{a}", timeout=180))
-        dest.chmod(0o755)
+        _publish(dest, github_asset("AlexxIT/go2rtc", f"go2rtc_linux_{a}", timeout=180))
         return str(dest)
     except Exception as e:
         log.warning("go2rtc download failed: %s", e)
@@ -92,8 +104,7 @@ def _ensure_ffmpeg() -> str | None:
             if not member:
                 log.warning("ffmpeg: binary not found in archive")
                 return shutil.which("ffmpeg")
-            dest.write_bytes(t.extractfile(member).read())
-        dest.chmod(0o755)
+            _publish(dest, t.extractfile(member).read())
         return str(dest)
     except Exception as e:
         log.warning("ffmpeg download failed: %s", e)

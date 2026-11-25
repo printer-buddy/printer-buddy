@@ -424,8 +424,8 @@ legacy_cleanup() {
   home="$(getent passwd "$RUN_USER" | cut -d: -f6)"
   if [ -f "$g" ] && [ "$(get_env PB_STREAM)" = advanced ] && ! dpkg -S "$g" >/dev/null 2>&1 \
      && ! grep -rlsF "$g" /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system "$home/.config/systemd/user" 2>/dev/null | grep -q . \
-     && ! pgrep -f "$g" >/dev/null 2>&1; then
-    echo "Removing the old go2rtc in /usr/local/bin (Printer Buddy keeps its own copy now)..."
+     && ! pgrep -f "$g" >/dev/null 2>&1 && [ "$INTERACTIVE" = 1 ] \
+     && yesno "Remove the old go2rtc in /usr/local/bin? Printer Buddy keeps its own copy now; keep it if something else uses it."; then
     sudo rm -f "$g"
   fi
   local pkg logs
@@ -436,7 +436,7 @@ legacy_cleanup() {
     zgrep -hE "^Commandline: apt-get install -y( -q)?( (ffmpeg|ustreamer|v4l-utils|python3-venv))+$" $logs 2>/dev/null \
       | grep -qE "( )$pkg( |$)" || continue
     [ "$(apt-get -s remove "$pkg" 2>/dev/null | grep -c '^Remv ')" = 1 ] || continue
-    echo "Removing $pkg (Printer Buddy installed it; it now keeps its own copy)..."
+    [ "$INTERACTIVE" = 1 ] && yesno "Remove $pkg? Printer Buddy installed it before and keeps its own copy now; keep it if something else uses it." || continue
     sudo apt-get remove -y -q "$pkg" >/dev/null || echo "Couldn't remove $pkg."
   done
 }

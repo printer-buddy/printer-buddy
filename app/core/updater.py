@@ -314,6 +314,7 @@ def fetch_ustreamer() -> bool:
                     return bool(shutil.which("ustreamer"))
                 (STREAM_BIN / "lib").mkdir(parents=True, exist_ok=True)
                 for so in lib.rglob("*.so*"):
+                    (STREAM_BIN / "lib" / so.name).unlink(missing_ok=True)
                     shutil.copy2(so, STREAM_BIN / "lib" / so.name, follow_symlinks=False)
                 todo.append(name)
         STREAM_BIN.mkdir(parents=True, exist_ok=True)

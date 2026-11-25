@@ -47,6 +47,14 @@ def _env(key: str) -> str:
     return v.strip()
 
 
+def _setting(key: str) -> str:
+    return _env(key).strip("\"'").strip().lower()
+
+
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
 def _api() -> str:
     custom = _env("PB_TUNNEL_API")
     if custom:
@@ -60,10 +68,10 @@ def _call(method: str, body: dict) -> tuple[int, dict]:
                                  headers={"content-type": "application/json", "user-agent": "printer-buddy"})
     try:
         with urllib.request.urlopen(req, timeout=90) as r:
-            return r.status, json.loads(r.read() or b"{}")
+            return r.status, _dict(json.loads(r.read() or b"{}"))
     except urllib.error.HTTPError as e:
         try:
-            return e.code, json.loads(e.read() or b"{}")
+            return e.code, _dict(json.loads(e.read() or b"{}"))
         except Exception:
             return e.code, {}
     except Exception as e:
@@ -123,8 +131,8 @@ class Tunnel:
         await self._stop_proc()
 
     def _setup(self) -> tuple[str, str, int] | None:
-        uid, key = _env("PB_USER_ID"), _env("PB_TUNNEL_KEY")
-        if _env("PB_REMOTE") != "on" or not uid.isdigit() or not key:
+        uid, key = _setting("PB_USER_ID"), _env("PB_TUNNEL_KEY")
+        if _setting("PB_REMOTE") != "on" or not uid.isdigit() or not key:
             return None
         port = _env("PORT")
         return uid, key, int(port) if port.isdigit() else 8080
@@ -145,7 +153,7 @@ class Tunnel:
         setup = self._setup()
         if not setup:
             self.error = ("Remote access isn't finished: run the installer, then Change setup > Remote access."
-                          if _env("PB_REMOTE") == "on" else None)
+                          if _setting("PB_REMOTE") == "on" else None)
             await self._stop_proc()
             return
         now = time.time()
@@ -175,9 +183,15 @@ class Tunnel:
             log.warning("tunnel: setup server said %s", self.error)
             self._retry_at = time.time() + 600
             return
-        self.proc = await asyncio.create_subprocess_exec(
-            str(CLOUDFLARED), "tunnel", "--no-autoupdate", "run", env={**os.environ, "TUNNEL_TOKEN": token},
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                str(CLOUDFLARED), "tunnel", "--no-autoupdate", "run", env={**os.environ, "TUNNEL_TOKEN": token},
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.error = f"Couldn't start cloudflared ({e}), trying again in 10 minutes."
+            log.warning("tunnel: %s", self.error)
+            self._retry_at = time.time() + 600
+            return
         self._started = time.time()
         self.error = None
         self.save({"tunnel_up": True})

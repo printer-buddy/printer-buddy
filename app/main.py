@@ -1008,13 +1008,23 @@ def share_user_id() -> str:
     return str(store.settings().get("share_user_id") or "")
 
 
-def share_url(request: Request, pid: int, code: str) -> str:
+def registered_id() -> str:
+    uid = os.getenv("PB_USER_ID", "").strip()
+    return uid if uid.isdigit() else ""
+
+
+def share_domain() -> str:
     domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/")
     if not domain and setup()["remote"] == "on":
         domain = "printerbuddy.stream"
-    if domain and share_user_id():
+    return domain
+
+
+def share_url(request: Request, pid: int, code: str) -> str:
+    domain = share_domain()
+    if domain:
         host = domain if domain.startswith("www.") else f"www.{domain}"
-        return f"https://{host}/share/user/{share_user_id()}/printer/{pid}/{code}"
+        return f"https://{host}/share/user/{registered_id()}/printer/{pid}/{code}" if registered_id() else ""
     return f"{str(request.base_url).rstrip('/')}/share/printer/{pid}/{code}"
 
 
@@ -1034,6 +1044,8 @@ async def create_share(request: Request):
         return err("not found", 404)
     if not remote_on():
         return err("share links need Remote access on (installer: Change setup)", 403)
+    if share_domain() and not registered_id():
+        return err("Remote access isn't finished: run the installer, then Change setup > Remote access.", 409)
     b = await body(request)
     expiry = b.get("expires", "1d")
     if expiry not in SHARE_EXPIRY:

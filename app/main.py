@@ -514,7 +514,7 @@ THEMES_URL = os.getenv("PB_THEMES_URL", "https://raw.githubusercontent.com/print
 THEME_IMG = (".png", ".jpg", ".jpeg", ".gif", ".svg")
 THEME_FONT = (".woff2", ".woff", ".ttf", ".otf")
 THEME_DIR = Path(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db")))) / "theme"
-THEME_URL = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""", re.I)
+THEME_URL = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]*))\s*\)""", re.I)
 THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 THEME_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
 THEME_COLORS = ("bg", "card", "card2", "line", "track", "text", "muted", "purple", "lilac", "orange", "red", "red-text",
@@ -546,9 +546,9 @@ async def ui_themes(request: Request):
             for t in data.get("themes") or []:
                 if not isinstance(t, dict) or not THEME_ID.match(str(t.get("id", ""))):
                     continue
-                pv = t.get("preview")
+                pv, sw = t.get("preview"), t.get("swatch")
                 items.append({"id": t["id"], "name": _theme_text(t.get("name"), 60) or t["id"], "author": _theme_text(t.get("author"), 60),
-                              "swatch": [c for c in (t.get("swatch") or [])[:5] if isinstance(c, str) and THEME_COLOR.match(c)],
+                              "swatch": [c for c in (sw if isinstance(sw, list) else [])[:5] if isinstance(c, str) and THEME_COLOR.match(c)],
                               "preview": f"{THEMES_URL}/{t['id']}/{pv}" if isinstance(pv, str) and THEME_PATH.match(pv) and pv.lower().endswith(THEME_IMG) else ""})
             _themes.update(at=time.time(), items=items)
         except Exception as e:
@@ -563,10 +563,12 @@ def _theme_css(css: str, base: str, want) -> str:
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     if re.search(r"@import|image-set\(|expression\(|javascript:|behavior\s*:|-moz-binding|\\", css, re.I):
         raise ValueError("theme.css can't use @import, image-set(), expression(), javascript:, bindings or backslashes")
+    if len(re.findall(r"url\(", css, re.I)) != len(THEME_URL.findall(css)):
+        raise ValueError("theme.css has a url() that isn't a plain file name")
 
     def to(m):
         import posixpath
-        u = m.group(1).strip()
+        u = next(g for g in m.groups() if g is not None).strip()
         return f'url("/api/ui/theme/{want(posixpath.normpath(posixpath.join(base, u)) if base else u, THEME_IMG + THEME_FONT, "css")}")'
     return THEME_URL.sub(to, css)
 
@@ -647,7 +649,8 @@ async def ui_theme_file(request: Request):
     path = THEME_DIR / name
     if "/" in name or "\\" in name or not path.is_file():
         return err("not found", 404)
-    return FileResponse(path, headers={"Cache-Control": "no-cache"})
+    return FileResponse(path, headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff",
+                                       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"})
 
 
 KV_KEYS = ("presets", "notes", "maintenance", "console_filters")

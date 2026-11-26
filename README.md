@@ -30,6 +30,7 @@ cd printer-buddy && ./update.sh     # git pull + restart
 
 Logs: `journalctl -u printer-buddy -f`.
 Docker is still supported if you want it: `docker compose -f docker/docker-compose.yml up -d --build`.
+**Docker is broken right now:** it doesn't get a box ID, so share links from outside your network and AI photo sharing don't work.
 
 ## AI failure detection
 

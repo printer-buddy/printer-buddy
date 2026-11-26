@@ -290,7 +290,7 @@ class Collector:
             if not img:
                 continue
             body = json.dumps({
-                "id": self.box_id(), "label": item["label"],
+                "id": self.box_id(), "key": os.getenv("PB_BOX_KEY", ""), "label": item["label"],
                 "source": item["source"] if item["source"] != "alert" else "alert_yes",
                 "image": base64.b64encode(img.read_bytes()).decode(),
                 "verdict": item.get("verdict"), "severity": item.get("severity"),

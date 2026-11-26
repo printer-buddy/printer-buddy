@@ -2,6 +2,38 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-24 sterling m security/own-copies################################
+
+## Printer Buddy keeps its own ffmpeg, ustreamer and go2rtc; no more apt installs
+
+Printer Buddy no longer installs system packages, and checks every download before using it: files from GitHub (go2rtc, cloudflared, mjpg-streamer and Printer Buddy's own parts) against the sha256 GitHub lists for them, ffmpeg against the .md5 its site publishes; a download that doesn't match is refused. A download is written to a temporary file and only put in place once complete, so a failed one never leaves a broken program behind. ffmpeg (timelapses, converted cameras, the Bambu X1/H2 camera) and go2rtc are always Printer Buddy's own copies in `data/streamer-bin`, downloaded on first use, with the system ones only as a fallback if the download fails. ustreamer (basic and advanced streamer) has no ready-made download, so Printer Buddy takes the box's own distro package with `apt-get download` (no root), and unpacks the program into `data/streamer-bin` and any libraries the box lacks into `data/streamer-bin/lib`; a retry after a failed library download replaces what the first try copied. A new install makes its Python environment without the python3-venv package when that's missing. On the next installer run from the menu, the installer asks before removing each of ffmpeg, ustreamer, v4l-utils and python3-venv, and only offers it when Printer Buddy's own install command for it is in apt's history and nothing else installed depends on it. It asks before removing the old `/usr/local/bin/go2rtc` too, and only offers it when the box uses the advanced streamer (the only reason Printer Buddy ever put it there), no package owns it, no service file mentions it and nothing is running it. The Bambu camera's ffmpeg install also works again: it called `updater.root`, which no longer exists. *Why:* those packages were installed as root and Printer Buddy couldn't control or remove them, and a damaged or swapped download would have been run as-is.
+
+Lines changed:
+- `app/core/camera.py` — 15, 23, 28 imports; 59–68 add `_publish` (temporary file, then swapped into place); 71–84 `_ensure_go2rtc` uses Printer Buddy's own copy first, the system one only as a fallback, and checks the download's sha256; 88–111 same for `_ensure_ffmpeg`, checked against its .md5
+- `app/main.py` — 68 put `data/streamer-bin` first on `PATH`, so timelapses and the Bambu camera find Printer Buddy's own ffmpeg; 1774–1775 fetch ffmpeg at start when timelapses are on
+- `app/printers/native.py` — 22 drop the unused `shutil` import; 43, 46–48 get ffmpeg through `_ensure_ffmpeg` for the Bambu camera
+- `app/core/updater.py` — 26 import `hashlib`; 59–75 add `check_sha256` and `github_asset`; 195–196 check each part's sha256; 335, 357 mjpg-streamer and go2rtc through `github_asset`; 274–323 add `_deb_extract`, `_installed` and `fetch_ustreamer` (317 replaces a library copied by an earlier try); 346–350 the basic and advanced tiers fetch ustreamer, go2rtc is always Printer Buddy's own; 385 (×2) drop the "install ffmpeg" message
+- `app/core/streamer.py` — 61–62 give the streamer `data/streamer-bin/lib`; 65–67 fetch ffmpeg for the advanced tier
+- `install.sh` — 246 (×6) remove `ensure_ffmpeg`; 272 (×10) `camera_setup` no longer installs packages; 301–311 make the venv without python3-venv when it's missing; 423–430 `legacy_cleanup` asks before removing the old `/usr/local/bin/go2rtc` (427–428); 431–441 and before removing each package Printer Buddy installed (439); 627 drop the `ensure_ffmpeg` call from the setup menu
+
+################################end of entry################################
+
+################################2026-11-25 sterling m security/tunnel################################
+
+## Box ID and key from the relay; share tunnel runs under Printer Buddy, only while a share link is active
+
+Printer Buddy now runs the share tunnel itself: it downloads its own `cloudflared` into `data/streamer-bin` and starts it as its own process, with no root, only while a share link is active. After 3 days with no active share link it stops the tunnel and tells the relay to hold its ID; the next share link gets the same ID and address back. The installer gets the box's ID and key from the relay at install (and on the next update for boxes installed before this; a box keeps its own ID, sending its tunnel key if it has one) and saves them as `PB_USER_ID` and `PB_BOX_KEY`. If the relay won't give back the box's old ID (another box has it, or its key is lost), the installer gets a new one. Printer Buddy no longer makes up an ID itself, and photos shared to improve the AI are sent with the key. When the tunnel can't run, the reason (from the relay, that Remote access isn't finished, or that cloudflared won't start) is passed to the Share window, and it waits 10 minutes before trying again. The tunnel reads Remote access and the box ID the same way the app does, so quotes or upper case in `printer-buddy.env` don't stop it. A share link from outside uses only the box ID the relay registered; until there is one, making a share link says Remote access isn't finished instead of giving a link that won't work. The installer no longer installs cloudflared or a root `cloudflared` service, and the register code prompt is gone: turning Remote access on just registers the box's tunnel with its key. On the next installer run, the old root `cloudflared` service is removed, but only if its token is this box's own tunnel token (checked against the relay with the box's key), and the old root camera streamer files in `/usr/local/lib/print-buddy-streamer` are deleted. *Why:* the share tunnel was a root service Printer Buddy couldn't control or remove, every box held a relay slot forever, and anyone could share tunnels or photos under any made-up ID.
+
+Lines changed:
+- `app/core/tunnel.py` — 1–218 new: the tunnel supervisor (downloads cloudflared and checks its sha256, gets the token from the relay, runs and restarts it, releases it after 3 days without a share link, keeps the reason when it can't run)
+- `app/core/store.py` — 135–138 add `active_share_count`
+- `app/main.py` — 46 import `Tunnel`; 82 create it; 1008 `share_user_id` no longer makes up an ID; 1011–1028 add `registered_id` and `share_domain`, outside share links use only the registered ID; 1047–1048 making a share link fails while Remote access isn't finished; 1059 start the tunnel straight away when a share link is made; 1068 the share list says why the tunnel can't run; 1773, 1777 start and stop it with the app
+- `app/ai/collect.py` — 293 send the box key with each photo
+- `README.md` — 33 note that Docker is broken: it gets no box ID
+- `install.sh` — 316 get the box ID on install; 320 run `legacy_cleanup` on install; 336 and on update; 337 get the box ID on update; 395–422 `tunnel_state` follows Printer Buddy's tunnel, add `root_tunnel_token` and `legacy_cleanup` (root cloudflared service, old streamer files); 443–471 `user_id` gets the ID and key from the relay (a new one if the old ID is refused), add `box_api`; 469 (×21) remove `install_cloudflared` and `start_tunnel`; 477–478 send the box key; 488–494, 496 `auto_tunnel` registers the tunnel with the box key, no register code; 500, 502 `remove_tunnel` stops Printer Buddy's tunnel instead of the root service
+
+################################end of entry################################
+
 ################################2026-11-24 sterling m ai/photos################################
 
 ## AI photos: only kept while sharing is on, with a set number to keep

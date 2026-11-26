@@ -43,6 +43,7 @@ from .core.store import Store
 from .core.bambu import discover_elegoo as bambu_discover
 from .core import components as comp
 from .core.streamer import Streamer, enabled as streamer_enabled
+from .core.tunnel import Tunnel
 from .core import camera as go2rtc
 from .media import timelapse as tl
 from .media.timelapse import Timelapse
@@ -64,6 +65,7 @@ class _QuietShutdown(logging.Filter):
 
 logging.getLogger("uvicorn.error").addFilter(_QuietShutdown())
 STATIC = Path(__file__).resolve().parent.parent / "ui"
+os.environ["PATH"] = f"{go2rtc.BIN}{os.pathsep}{os.environ.get('PATH', '')}"
 
 store = Store(os.getenv("DB_PATH", "data/monitor.db"))
 manager = Manager(store, Notifier(store))
@@ -77,6 +79,7 @@ manager.collect = Collector(store, os.path.dirname(os.path.abspath(os.getenv("DB
                             lambda: share_user_id(), lambda: manager.ai.model is not None)
 scan_lock = asyncio.Lock()
 streamer = Streamer()
+tunnel = Tunnel(store.active_share_count, store.settings, store.save_settings)
 
 
 def err(msg: str, status: int = 400):
@@ -1002,20 +1005,26 @@ def share_user_id() -> str:
     env_uid = os.getenv("PB_USER_ID", "").strip()
     if env_uid.isdigit():
         return env_uid
-    uid = store.settings().get("share_user_id")
-    if not uid:
-        uid = str(secrets.randbelow(9_000_000) + 1_000_000)
-        store.save_settings({"share_user_id": uid})
-    return uid
+    return str(store.settings().get("share_user_id") or "")
 
 
-def share_url(request: Request, pid: int, code: str) -> str:
+def registered_id() -> str:
+    uid = os.getenv("PB_USER_ID", "").strip()
+    return uid if uid.isdigit() else ""
+
+
+def share_domain() -> str:
     domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/")
     if not domain and setup()["remote"] == "on":
         domain = "printerbuddy.stream"
+    return domain
+
+
+def share_url(request: Request, pid: int, code: str) -> str:
+    domain = share_domain()
     if domain:
         host = domain if domain.startswith("www.") else f"www.{domain}"
-        return f"https://{host}/share/user/{share_user_id()}/printer/{pid}/{code}"
+        return f"https://{host}/share/user/{registered_id()}/printer/{pid}/{code}" if registered_id() else ""
     return f"{str(request.base_url).rstrip('/')}/share/printer/{pid}/{code}"
 
 
@@ -1035,6 +1044,8 @@ async def create_share(request: Request):
         return err("not found", 404)
     if not remote_on():
         return err("share links need Remote access on (installer: Change setup)", 403)
+    if share_domain() and not registered_id():
+        return err("Remote access isn't finished: run the installer, then Change setup > Remote access.", 409)
     b = await body(request)
     expiry = b.get("expires", "1d")
     if expiry not in SHARE_EXPIRY:
@@ -1045,6 +1056,7 @@ async def create_share(request: Request):
         return err("no print is running on this printer", 409)
     seconds = SHARE_EXPIRY[expiry]
     row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None, until, b.get("chat") is not False)
+    tunnel.kick()
     return JSONResponse(share_view(request, row), status_code=201)
 
 
@@ -1052,7 +1064,8 @@ async def list_shares(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
-    return JSONResponse({"shares": [share_view(request, r) for r in store.list_shares(pid)], "remote": remote_on()})
+    return JSONResponse({"shares": [share_view(request, r) for r in store.list_shares(pid)], "remote": remote_on(),
+                         "tunnel_error": tunnel.error})
 
 
 async def revoke_share(request: Request):
@@ -1757,7 +1770,11 @@ async def lifespan(app):
     await manager.start()
     manager.collect.start()
     streamer.start()
+    tunnel.start()
+    if tl.enabled():
+        asyncio.create_task(asyncio.to_thread(go2rtc._ensure_ffmpeg))
     yield
+    await tunnel.stop()
     await streamer.stop()
     await go2rtc.stop()
     await manager.collect.stop()

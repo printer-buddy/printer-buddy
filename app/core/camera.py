@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
 import os
@@ -19,11 +20,13 @@ import platform
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
 from .net import http_get, http_put
+from .updater import github_asset
 
 log = logging.getLogger(__name__)
 
@@ -53,50 +56,59 @@ def _fetch(url: str, timeout: int = 180) -> bytes:
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "printer-buddy"}), timeout=timeout).read()
 
 
+def _publish(dest: Path, data: bytes):
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _ensure_go2rtc() -> str | None:
-    if found := shutil.which("go2rtc"):
-        return found
     dest = BIN / "go2rtc"
     if dest.exists():
         return str(dest)
     a = GO2RTC_ARCH.get(platform.machine())
     if not a:
         log.warning("go2rtc: no build for %s", platform.machine())
-        return None
+        return shutil.which("go2rtc")
     try:
         BIN.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(_fetch(f"https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_linux_{a}"))
-        dest.chmod(0o755)
+        _publish(dest, github_asset("AlexxIT/go2rtc", f"go2rtc_linux_{a}", timeout=180))
         return str(dest)
     except Exception as e:
         log.warning("go2rtc download failed: %s", e)
-        return None
+        return shutil.which("go2rtc")
 
 
 def _ensure_ffmpeg() -> str | None:
-    if found := shutil.which("ffmpeg"):
-        return found
     dest = BIN / "ffmpeg"
     if dest.exists():
         return str(dest)
     a = FFMPEG_ARCH.get(platform.machine())
     if not a:
         log.warning("ffmpeg: no static build for %s", platform.machine())
-        return None
+        return shutil.which("ffmpeg")
     try:
         BIN.mkdir(parents=True, exist_ok=True)
-        data = _fetch(f"https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-{a}-static.tar.xz")
+        url = f"https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-{a}-static.tar.xz"
+        data = _fetch(url)
+        if hashlib.md5(data).hexdigest() != _fetch(url + ".md5", 30).decode().split()[0]:
+            raise ValueError("download doesn't match its checksum")
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as t:
             member = next((m for m in t.getmembers() if m.name.endswith("/ffmpeg")), None)
             if not member:
                 log.warning("ffmpeg: binary not found in archive")
-                return None
-            dest.write_bytes(t.extractfile(member).read())
-        dest.chmod(0o755)
+                return shutil.which("ffmpeg")
+            _publish(dest, t.extractfile(member).read())
         return str(dest)
     except Exception as e:
         log.warning("ffmpeg download failed: %s", e)
-        return None
+        return shutil.which("ffmpeg")
 
 
 class Go2rtc:

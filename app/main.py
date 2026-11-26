@@ -509,139 +509,128 @@ async def ui_layout(request: Request):
     return JSONResponse({"layout": store.settings().get(key)})
 
 
-# source -> (theme folder in the config root, {our part: their file names, first found wins}, Moonraker database namespace)
-THEME_SOURCES = {
-    "fluidd": (".fluidd-theme", {"background": ["background"], "logo": ["sidebar-logo", "logo"]}, "fluidd"),
-    "mainsail": (".theme", {"background": ["main-background"], "logo": ["sidebar-logo"], "sidebar": ["sidebar-background"]}, "mainsail"),
-}
+# The theme list: a public repo anyone can add a theme to with a pull request; PB_THEMES_URL points a box at a fork to try one
+THEMES_URL = os.getenv("PB_THEMES_URL", "https://raw.githubusercontent.com/printer-buddy/printer-buddy-themes/main").rstrip("/")
 THEME_IMG = (".png", ".jpg", ".jpeg", ".gif", ".svg")
+THEME_FONT = (".woff2", ".woff", ".ttf", ".otf")
 THEME_DIR = Path(os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db")))) / "theme"
-THEME_CSS = {"page": ("html", "body"), "panel": (".v-card",), "head": (".card-heading", ".v-toolbar"),
-             "over": ("body::before", "body::after", "html::before", "html::after", "#app::before", "#app::after")}
-THEME_PROP = re.compile(r"^(-webkit-)?(background(-[a-z]+)?|backdrop-filter)$")
-THEME_OVER = {"opacity", "width", "height", "top", "left", "right", "bottom", "transform"}
-THEME_URL = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""")
+THEME_URL = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]*))\s*\)""", re.I)
+THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+THEME_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
+THEME_COLORS = ("bg", "card", "card2", "line", "track", "text", "muted", "purple", "lilac", "orange", "red", "red-text",
+                "bd-panel", "bd-head", "bd-line", "bd-hover", "bd-deep")
+THEME_COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.%,/ ]+\))$")
+THEME_FAMILY = re.compile(r"^[A-Za-z0-9 _-]{1,40}$")
+_themes = {"at": 0.0, "items": []}
 
 
-def _theme_css(css: str) -> dict:
-    """{page | panel | head: "prop: value; ..."} from a custom.css: backgrounds and blur only, nothing that could run or break out."""
-    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
-    found = {k: {} for k in THEME_CSS}
-    for sel, block in re.findall(r"([^{}@]+)\{([^{}]*)\}", css):
-        sels = [x.strip() for x in sel.split(",")]
-        for part, keys in THEME_CSS.items():
-            if not any(x == k or (k.startswith(".") and k in x) for x in sels for k in keys):
-                continue
-            if part == "head" and any(".v-card" in x for x in sels):
-                continue
-            for d in block.split(";"):
-                prop, _, val = d.partition(":")
-                prop, val = prop.strip().lower(), val.replace("!important", "").strip()
-                if (not (THEME_PROP.match(prop) or (part == "over" and prop in THEME_OVER)) or not val or val in ("transparent", "none", "initial", "inherit")
-                        or re.search(r"[<>{}\\]|expression\(|javascript:", val, re.I)):
+def _theme_get(path: str, cap: int) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(f"{THEMES_URL}/{path}", headers={"User-Agent": "printer-buddy"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = r.read(cap + 1)
+    if len(data) > cap:
+        raise ValueError(f"{path} is too big")
+    return data
+
+
+def _theme_text(v, n: int) -> str:
+    return v.strip()[:n] if isinstance(v, str) else ""
+
+
+async def ui_themes(request: Request):
+    if time.time() - _themes["at"] > 3600 or request.query_params.get("refresh") == "1":
+        try:
+            data = json.loads(await asyncio.to_thread(_theme_get, "themes.json", 1_000_000))
+            items = []
+            for t in data.get("themes") or []:
+                if not isinstance(t, dict) or not THEME_ID.match(str(t.get("id", ""))):
                     continue
-                found[part][prop] = val
-    return {k: "; ".join(f"{p}: {v}" for p, v in d.items()) for k, d in found.items() if d}
+                pv, sw = t.get("preview"), t.get("swatch")
+                items.append({"id": t["id"], "name": _theme_text(t.get("name"), 60) or t["id"], "author": _theme_text(t.get("author"), 60),
+                              "swatch": [c for c in (sw if isinstance(sw, list) else [])[:5] if isinstance(c, str) and THEME_COLOR.match(c)],
+                              "preview": f"{THEMES_URL}/{t['id']}/{pv}" if isinstance(pv, str) and THEME_PATH.match(pv) and pv.lower().endswith(THEME_IMG) else ""})
+            _themes.update(at=time.time(), items=items)
+        except Exception as e:
+            logging.getLogger(__name__).warning("themes: %s", e)
+            if not _themes["items"]:
+                return err(f"couldn't get the theme list: {e}", 502)
+    return JSONResponse({"themes": _themes["items"]})
 
 
-def _config_url(u: str) -> str | None:
-    m = re.match(r"^/?server/files/config/(.+)$", u.strip())
-    return m.group(1) if m and ".." not in m.group(1).split("/") else None
+def _theme_css(css: str, base: str, want) -> str:
+    """theme.css with every url() pointing at the theme's own pictures and fonts; anything else that could load from elsewhere is refused."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    if re.search(r"@import|image-set\(|expression\(|javascript:|behavior\s*:|-moz-binding|\\", css, re.I):
+        raise ValueError("theme.css can't use @import, image-set(), expression(), javascript:, bindings or backslashes")
+    if len(re.findall(r"url\(", css, re.I)) != len(THEME_URL.findall(css)):
+        raise ValueError("theme.css has a url() that isn't a plain file name")
+
+    def to(m):
+        import posixpath
+        u = next(g for g in m.groups() if g is not None).strip()
+        return f'url("/api/ui/theme/{want(posixpath.normpath(posixpath.join(base, u)) if base else u, THEME_IMG + THEME_FONT, "css")}")'
+    return THEME_URL.sub(to, css)
 
 
-async def _read_file_bytes(client, path: str, cap: int) -> bytes:
-    up = await client.read_file("config", path)
-    data = bytearray()
+async def ui_theme_pick(request: Request):
+    tid = str((await body(request)).get("id", ""))
+    if not THEME_ID.match(tid):
+        return err("bad theme id")
+    files: dict[str, str] = {}
+
+    def want(path, kinds, name):
+        if not isinstance(path, str) or not THEME_PATH.match(path) or not path.lower().endswith(kinds):
+            raise ValueError(f"bad file name {path!r}")
+        if path not in files:
+            if len(files) >= 20:
+                raise ValueError("a theme can have at most 20 files")
+            files[path] = f"{name}-{len(files)}{os.path.splitext(path)[1].lower()}"
+        return files[path]
     try:
-        async for chunk in up.chunks():
-            data += chunk
-            if len(data) > cap:
-                raise ValueError(f"{path} is too big")
-    finally:
-        up.close()
-    return bytes(data)
-
-
-async def _read_theme(client, source: str) -> dict:
-    folder, parts, ns = THEME_SOURCES[source]
-    out = {"source": source, "color": None, "mode": None, "files": {}, "css": {}}
-    logo = None
-    with contextlib.suppress(Exception):
-        ui = (await client.rpc("server.database.get_item", {"namespace": ns, "key": "uiSettings"}, timeout=10) or {}).get("value") or {}
-        if source == "fluidd":
-            t = ui.get("theme") or {}
-            out["color"], out["mode"] = t.get("color"), (None if t.get("isDark") is None else "dark" if t["isDark"] else "light")
-            logo = _config_url(str((t.get("logo") or {}).get("src") or ""))
-        else:
-            out["color"], out["mode"] = ui.get("primary"), ui.get("mode")
-    names = set()
-    with contextlib.suppress(Exception):
-        names = {f.get("filename", "") for f in (await client.rpc("server.files.get_directory", {"path": f"config/{folder}"}, timeout=10) or {}).get("files", [])}
-    for part, bases in parts.items():
-        hit = next((b + x for b in bases for x in THEME_IMG if b + x in names), None)
-        if hit:
-            out["files"][part] = f"{folder}/{hit}"
-    if logo and logo.startswith(folder + "/") and logo.split("/", 1)[1] in names:
-        out["files"]["logo"] = logo
-    if "custom.css" in names:
-        with contextlib.suppress(Exception):
-            out["css"] = _theme_css((await _read_file_bytes(client, f"{folder}/custom.css", 500_000)).decode("utf-8", "replace"))
-    if not isinstance(out["color"], str) or not out["color"].startswith("#"):
-        out["color"] = None
-    return out
-
-
-async def _copy_theme_file(client, path: str, name: str) -> str:
-    name += os.path.splitext(path)[1].lower()
-    (THEME_DIR / name).write_bytes(await _read_file_bytes(client, path, 15_000_000))
-    return name
-
-
-async def printer_theme(request: Request):
-    client, e = _online_client(request)
-    if e:
-        return e
-    b = await body(request) if request.method == "PUT" else {}
-    source = request.query_params.get("source") if request.method == "GET" else b.get("source")
-    if source not in THEME_SOURCES:
-        return err("source must be fluidd or mainsail")
-    found = await _read_theme(client, source)
-    if request.method == "GET":
-        pid = request.path_params["pid"]
-
-        def to(m):
-            p = _config_url(m.group(1))
-            return f'url("/api/printers/{pid}/file?root=config&path={quote(p)}")' if p else m.group(0) if m.group(1).startswith("http") else "none"
-        found["css"] = {k: THEME_URL.sub(to, v) for k, v in found["css"].items()}
-        return JSONResponse(found)
-    parts = set(b.get("parts") or [])
-    theme = {"source": source}
-    if "color" in parts and found["color"]:
-        theme["color"] = found["color"]
-    if "mode" in parts and found["mode"] in ("dark", "light"):
-        theme["mode"] = found["mode"]
+        t = json.loads(await asyncio.to_thread(_theme_get, f"{tid}/theme.json", 200_000))
+        if not isinstance(t, dict):
+            raise ValueError("theme.json isn't an object")
+        theme = {"source": "list", "id": tid, "name": next((i["name"] for i in _themes["items"] if i["id"] == tid), tid)}
+        if t.get("mode") in ("dark", "light"):
+            theme["mode"] = t["mode"]
+        colors = {}
+        for m in ("dark", "light"):
+            c = (t.get("colors") or {}).get(m)
+            ok = {k: v.strip() for k, v in c.items() if k in THEME_COLORS and isinstance(v, str) and THEME_COLOR.match(v.strip())} if isinstance(c, dict) else {}
+            if ok:
+                colors[m] = ok
+        if colors:
+            theme["colors"] = colors
+        fonts = {}
+        for k in ("text", "mono"):
+            f = (t.get("fonts") or {}).get(k)
+            if isinstance(f, dict) and THEME_FAMILY.match(str(f.get("family", ""))):
+                fonts[k] = {"family": f["family"]}
+                if f.get("file"):
+                    fonts[k]["file"] = want(f["file"], THEME_FONT, "font")
+        if fonts:
+            theme["fonts"] = fonts
+        for k in ("background", "logo", "sidebar"):
+            if (t.get("images") or {}).get(k):
+                theme[k] = want(t["images"][k], THEME_IMG, k)
+        css = ""
+        if t.get("css"):
+            path = t["css"]
+            if not isinstance(path, str) or not THEME_PATH.match(path) or not path.lower().endswith(".css"):
+                raise ValueError(f"bad file name {path!r}")
+            css = _theme_css((await asyncio.to_thread(_theme_get, f"{tid}/{path}", 200_000)).decode("utf-8"), path.rpartition("/")[0], want)
+        got = {name: await asyncio.to_thread(_theme_get, f"{tid}/{path}", 15_000_000) for path, name in files.items()}
+    except Exception as ex:
+        return err(f"couldn't get that theme: {ex}", 502)
     THEME_DIR.mkdir(parents=True, exist_ok=True)
     for f in THEME_DIR.iterdir():
         f.unlink()
-    try:
-        for part, path in found["files"].items():
-            if part in parts:
-                theme[part] = await _copy_theme_file(client, path, part)
-        css = {}
-        for part, decls in found["css"].items():
-            if part not in parts:
-                continue
-            urls, n = {}, 0
-            for u in THEME_URL.findall(decls):
-                if u not in urls:
-                    p = _config_url(u)
-                    urls[u] = f'url("/api/ui/theme/{await _copy_theme_file(client, p, f"{part}-{n}")}")' if p else f'url("{u}")' if u.startswith("http") else "none"
-                    n += 1
-            css[part] = THEME_URL.sub(lambda m: urls[m.group(1)], decls)
-        if css:
-            theme["css"] = css
-    except Exception as ex:
-        return err(f"couldn't copy the theme: {ex}", 502)
+    for name, data in got.items():
+        (THEME_DIR / name).write_bytes(data)
+    if css:
+        (THEME_DIR / "theme.css").write_text(css, encoding="utf-8")
+        theme["stylesheet"] = "theme.css"
     store.save_settings({"ui_theme": theme})
     return JSONResponse({"theme": theme})
 
@@ -660,7 +649,8 @@ async def ui_theme_file(request: Request):
     path = THEME_DIR / name
     if "/" in name or "\\" in name or not path.is_file():
         return err("not found", 404)
-    return FileResponse(path, headers={"Cache-Control": "no-cache"})
+    return FileResponse(path, headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff",
+                                       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"})
 
 
 KV_KEYS = ("presets", "notes", "maintenance", "console_filters")
@@ -1889,8 +1879,10 @@ _app = Starlette(routes=[
     Route("/api/ai/settings", ai_settings, methods=["GET", "PUT"]),
     Route("/api/ui/layout", ui_layout, methods=["GET", "PUT"]),
     Route("/api/ui/theme", ui_theme, methods=["GET", "DELETE"]),
+    Route("/api/ui/themes", ui_themes),
+    Route("/api/ui/theme/pick", ui_theme_pick, methods=["POST"]),
     Route("/api/ui/theme/{name}", ui_theme_file),
-    Route("/api/printers/{pid:int}/theme", printer_theme, methods=["GET", "PUT"]),    Route("/api/news", news),
+    Route("/api/news", news),
     Route("/api/ai/reload", ai_reload, methods=["POST"]),
     Route("/api/components", components_list),
     Route("/api/components", components_action, methods=["POST"]),

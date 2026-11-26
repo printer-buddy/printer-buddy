@@ -115,12 +115,23 @@ def core_branch() -> str:
 def update_core() -> bool:
     b = core_branch()
     say(f"Getting the latest {b}...")
+    before = git("rev-parse", "HEAD")
     ok = run("git", "-C", ROOT, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*") \
         and run("git", "-C", ROOT, "fetch", "-q", "--prune", "origin") \
         and run("git", "-C", ROOT, "reset", "-q", "--hard") \
         and run("git", "-C", ROOT, "checkout", "-q", "-B", b, f"origin/{b}") \
         and run("git", "-C", ROOT, "branch", "-q", "-u", f"origin/{b}")
     say(f"Now on {b}: {git('log', '-1', '--format=%h %s')}" if ok else "Couldn't update from GitHub. Nothing was changed.")
+    if ok:
+        new = git("log", "--format=%h %s", f"{before}..HEAD").splitlines() if before else []
+        if not new:
+            say("  Already up to date.")
+        else:
+            say(f"  {len(new)} new change{'s' if len(new) != 1 else ''} since {before[:7]}:")
+            for line in new[:10]:
+                say(f"    {line}")
+            if len(new) > 10:
+                say(f"    and {len(new) - 10} more")
     return ok
 
 
@@ -169,7 +180,7 @@ def missing_needs(rel: dict) -> list[str]:
     return miss
 
 
-def fetch_part(name: str, asset: str, inner: str, dest: Path) -> bool:
+def fetch_part(name: str, asset: str, inner: str, dest: Path, quiet: bool = False) -> bool:
     ch = channel(name)
     try:
         rels = releases()
@@ -189,6 +200,8 @@ def fetch_part(name: str, asset: str, inner: str, dest: Path) -> bool:
     stamp = f"{rel['tag_name']} {a['updated_at']} {asset}"
     mark = STATE / name
     if dest.exists() and mark.exists() and mark.read_text() == stamp:
+        if not quiet:
+            say(f"  {name}: {rel['tag_name']}, up to date")
         return True
     try:
         data = urllib.request.urlopen(urllib.request.Request(a["browser_download_url"], headers=HDR), timeout=300).read()
@@ -211,11 +224,12 @@ def fetch_part(name: str, asset: str, inner: str, dest: Path) -> bool:
         shutil.rmtree(tmp, ignore_errors=True)
     STATE.mkdir(parents=True, exist_ok=True)
     mark.write_text(stamp)
-    say(f"{name}: {rel['tag_name']}")
+    say(f"  {name}: updated to {rel['tag_name']}")
     return True
 
 
 def parts() -> bool:
+    say("Parts:")
     ok = fetch_part("ui", f"print-buddy-ui-{env('PB_UI')}.tar.gz", "print-buddy-ui", ROOT / "ui")
     ok &= fetch_part("notify", f"print-buddy-notify-{env('PB_NOTIFY')}.tar.gz", "print-buddy-notify/pb_notify/__init__.py",
                      ROOT / "app" / "core" / "notify.py")
@@ -235,7 +249,9 @@ def helper() -> str | None:
 def pip() -> bool:
     if not (VENV / "pip").exists():
         return True
-    return run(VENV / "pip", "install", "-q", "-r", ROOT / "requirements.txt")
+    ok = run(VENV / "pip", "install", "-q", "-r", ROOT / "requirements.txt")
+    say("Python libraries: checked" if ok else "Python libraries: couldn't be updated, see above")
+    return ok
 
 
 def nvidia_gpu() -> bool:
@@ -367,7 +383,7 @@ def ensure_streamer() -> bool:
     tier = env("PB_STREAM")
     if tier == "off":
         return True
-    if not fetch_part("streamer", f"print-buddy-streamer-{tier}.tar.gz", "print-buddy-streamer", ROOT / "streamer"):
+    if not fetch_part("streamer", f"print-buddy-streamer-{tier}.tar.gz", "print-buddy-streamer", ROOT / "streamer", quiet=True):
         return False
     conf = ROOT / "data" / "streamer.conf"
     src = conf if conf.exists() else ROOT / "streamer" / "streamer.conf.example"
@@ -378,6 +394,7 @@ def ensure_streamer() -> bool:
     if not fetch_stream_bins(tier):
         say("Couldn't set up the camera streamer.")
         return False
+    say(f"Camera streamer ({tier}): ready")
     return True
 
 

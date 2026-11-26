@@ -2,6 +2,29 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-26 sterling m security/update-output################################
+
+## Updating shows every step and what it found
+
+An update now says what it's doing and what it found at each step: the new changes it pulled (up to 10, then how many more) or that it was already up to date; the restart helper and sudo rule (with a note that sudo may ask for a password, and without visudo's "parsed OK"); camera access; the old share tunnel service, old camera streamer files, old go2rtc and old system packages (none, moved, removed, or kept and why); the box ID; each part (updated, or already up to date); the Python libraries; the camera streamer; the service file; the restart; and where Printer Buddy is running. *Why:* most steps ran without a word, so a long update looked stuck and the sudo password prompt came with no reason.
+
+Lines changed:
+- `app/core/updater.py` — 118, 125–134 list the new changes after pulling, or say it's up to date; 183, 203–204 say when a part is already up to date (not a second time for the streamer, 386); 227, 232 a "Parts:" heading and "updated to"; 252–254 the Python libraries; 397 the camera streamer is ready
+- `install.sh` — 212 "Restarting Printer Buddy..."; 246 the service file; 260, 266, 269 the restart helper and sudo rule; 283–288 camera access; 340 where Printer Buddy is running; 348 the box ID; 419–425, 432–434, 440–442, 451–455, 457–472 the old share tunnel service, camera streamer files, go2rtc and system packages
+
+################################end of entry################################
+
+################################2026-11-25 sterling m security/box-key################################
+
+## A new box makes its own key before asking for its box ID
+
+When the installer asks the relay for a new box ID, it now makes the box key itself, saves it as `PB_BOX_KEY` first and sends it (`{"key": "..."}`). Asking again, after a timeout or on the next install run, sends the same key and gets the same ID. A box whose old ID was refused makes a new key the same way. *Why:* the relay can be slow to answer ("busy, try again"); before, every new try made a new ID the box never got, and used up the network's 5 new IDs a day.
+
+Lines changed:
+- `install.sh` — 483–489 a new box makes and saves its key, then sends it; 495–496 the same when its old ID is refused; 508 add `new_box_key`
+
+################################end of entry################################
+
 ################################2026-11-24 sterling m security/own-copies################################
 
 ## Printer Buddy keeps its own ffmpeg, ustreamer and go2rtc; no more apt installs

@@ -2,6 +2,17 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-26 sterling m themes/list################################
+
+## Themes from the theme list replace copying a Fluidd or Mainsail theme
+
+`GET /api/ui/themes` lists the themes in the `printer-buddy/printer-buddy-themes` repo (read from GitHub, kept for an hour), and `POST /api/ui/theme/pick {"id"}` downloads one and saves it as the box's theme for every device: dark and light colours, a text and a monospace font, background, logo and side-bar pictures, and a `theme.css`. Colours and font names are checked, file names may only use letters, numbers, `.`, `_` and `-`, pictures and fonts are up to 15 MB each (20 files at most), and every `url()` in `theme.css` must point at the theme's own pictures or fonts; a `theme.css` with `@import`, `image-set()`, `expression()`, `javascript:`, bindings or backslashes is refused. A theme that fails to download or check leaves the current theme as it was. `PB_THEMES_URL` in `printer-buddy.env` points the box at another copy of the list, to try a theme before submitting it. The Fluidd / Mainsail copy (`/api/printers/<id>/theme`) is removed; a theme copied before keeps showing until another is picked. *Why:* anyone can now add a theme to the list with a pull request, and a theme can restyle all of Printer Buddy instead of the few parts a Fluidd or Mainsail theme had that fit.
+
+Lines changed:
+- `app/main.py` — 512–633 replace the Fluidd / Mainsail copy with the theme list (`ui_themes`, `_theme_css`, `ui_theme_pick`); 1879–1880 add the two routes and remove `/api/printers/<id>/theme`
+
+################################end of entry################################
+
 ################################2026-11-26 sterling m security/update-output################################
 
 ## Updating shows every step and what it found

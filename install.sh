@@ -209,6 +209,7 @@ core_branch() {
 
 hard_restart() {
   local port; port="$(get_env PORT)"; port="${port:-8080}"
+  echo "Restarting Printer Buddy..."
   sudo systemctl stop "$SERVICE"
   local i; for i in $(seq 1 20); do systemctl is-active --quiet "$SERVICE" || break; sleep 0.5; done
   sudo systemctl start "$SERVICE" || { echo "The service failed to start. $(port_hint "$port")"; return 1; }
@@ -242,6 +243,7 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
   sudo systemctl daemon-reload
+  echo "Service file: $UNIT_FILE written"
 }
 
 
@@ -255,14 +257,16 @@ ensure_ai() { python3 "$UPDATER" ai; }
 fetch_parts() { python3 "$UPDATER" parts; }
 
 install_helper() {
+  echo "Updating the restart helper and its sudo rule (sudo may ask for your password)..."
   sudo install -d -o root -g root -m 755 "$(dirname "$HELPER")" \
     && sudo install -o root -g root -m 755 "$DIR/tools/restart.sh" "$HELPER" || return 1
   sudo rm -f "$(dirname "$HELPER")/root.sh" "$(dirname "$HELPER")/streamer-root.sh"
   local rule="$RUN_USER ALL=(root) NOPASSWD: $HELPER"
   echo "$rule" | sudo tee /etc/sudoers.d/printer-buddy.tmp >/dev/null \
-    && sudo visudo -cqf /etc/sudoers.d/printer-buddy.tmp \
+    && sudo visudo -cqf /etc/sudoers.d/printer-buddy.tmp >/dev/null \
     && sudo mv /etc/sudoers.d/printer-buddy.tmp /etc/sudoers.d/printer-buddy && sudo chmod 440 /etc/sudoers.d/printer-buddy \
     || { sudo rm -f /etc/sudoers.d/printer-buddy.tmp; echo "Couldn't set up Printer Buddy's sudo rule."; return 1; }
+  echo "Restart helper: $HELPER updated; sudo rule: checked"
 }
 
 ensure_streamer() { python3 "$UPDATER" streamer; }
@@ -275,6 +279,12 @@ camera_setup() {
     sudo systemctl disable --now printer-buddy-streamer >/dev/null 2>&1 || true
     sudo rm -f /etc/systemd/system/printer-buddy-streamer.service
     sudo systemctl daemon-reload
+  fi
+  local groups; groups=" $(id -nG "$RUN_USER" 2>/dev/null) "
+  if [[ "$groups" == *" printerbuddy "* && "$groups" == *" video "* ]]; then
+    echo "Camera access: $RUN_USER is in the printerbuddy and video groups"
+  else
+    echo "Camera access: couldn't add $RUN_USER to the printerbuddy and video groups, cameras may not open"
   fi
 }
 
@@ -327,6 +337,7 @@ do_update() {
   python3 "$UPDATER" core || return 1
   after_code_change || return 1
   echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
+  installed && echo "Printer Buddy is running: $(url)"
   check_updates
 }
 
@@ -334,7 +345,7 @@ after_code_change() {
   installed && install_helper
   installed && camera_setup
   installed && legacy_cleanup
-  user_id >/dev/null || true
+  local uid; uid="$(user_id)" && echo "Box ID: $uid"
   python3 "$UPDATER" after || echo "Some parts didn't update, see above."
   if installed; then write_unit; hard_restart || return 1; fi
   return 0
@@ -405,20 +416,30 @@ root_tunnel_token() {
   else return 1; fi
 }
 legacy_cleanup() {
-  if systemctl cat cloudflared >/dev/null 2>&1 && [ -n "$(get_env PB_TUNNEL_KEY)" ]; then
-    local theirs mine tfile
-    theirs="$(root_tunnel_token)"; mine="$(json_get token <<<"$(tunnel_call POST 2>/dev/null)")"
+  local theirs="" mine="" tfile
+  if ! systemctl cat cloudflared >/dev/null 2>&1; then
+    echo "Old share tunnel service: none"
+  else
+    if [ -n "$(get_env PB_TUNNEL_KEY)" ]; then
+      theirs="$(root_tunnel_token)"; mine="$(json_get token <<<"$(tunnel_call POST 2>/dev/null)")"
+    fi
     if [ -n "$theirs" ] && [ "$theirs" = "$mine" ]; then
       echo "Moving the share tunnel under Printer Buddy..."
       tfile="$(systemctl cat cloudflared 2>/dev/null | grep -m1 '^ExecStart=' | sed -n 's/.*--token-file[= ]\+\([^ ]*\).*/\1/p')"
       sudo cloudflared service uninstall >/dev/null 2>&1 || { sudo systemctl disable --now cloudflared >/dev/null 2>&1; sudo rm -f /etc/systemd/system/cloudflared.service; }
       [ -n "$tfile" ] && [ "$(sudo cat "$tfile" 2>/dev/null)" = "$mine" ] && sudo rm -f "$tfile"
       sudo systemctl daemon-reload
+      echo "Old share tunnel service: moved under Printer Buddy"
+    else
+      echo "Old share tunnel service: cloudflared runs a tunnel Printer Buddy couldn't match to this box, left alone"
     fi
   fi
   if [ -d /usr/local/lib/print-buddy-streamer ]; then
     echo "Removing the old camera streamer files..."
     sudo rm -rf /usr/local/lib/print-buddy-streamer
+    echo "Old camera streamer files: removed"
+  else
+    echo "Old camera streamer files: none"
   fi
   local g=/usr/local/bin/go2rtc home
   home="$(getent passwd "$RUN_USER" | cut -d: -f6)"
@@ -427,18 +448,28 @@ legacy_cleanup() {
      && ! pgrep -f "$g" >/dev/null 2>&1 && [ "$INTERACTIVE" = 1 ] \
      && yesno "Remove the old go2rtc in /usr/local/bin? Printer Buddy keeps its own copy now; keep it if something else uses it."; then
     sudo rm -f "$g"
+    echo "Old go2rtc in /usr/local/bin: removed"
+  elif [ -f "$g" ]; then
+    echo "Old go2rtc in /usr/local/bin: kept"
+  else
+    echo "Old go2rtc in /usr/local/bin: none"
   fi
-  local pkg logs
+  local pkg logs found=0
   logs="$(ls /var/log/apt/history.log* 2>/dev/null)"
-  [ -n "$logs" ] || return 0
+  [ -n "$logs" ] || { echo "Old system packages: no apt history to check"; return 0; }
   for pkg in ffmpeg ustreamer v4l-utils python3-venv; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || continue
     zgrep -hE "^Commandline: apt-get install -y( -q)?( (ffmpeg|ustreamer|v4l-utils|python3-venv))+$" $logs 2>/dev/null \
       | grep -qE "( )$pkg( |$)" || continue
-    [ "$(apt-get -s remove "$pkg" 2>/dev/null | grep -c '^Remv ')" = 1 ] || continue
-    [ "$INTERACTIVE" = 1 ] && yesno "Remove $pkg? Printer Buddy installed it before and keeps its own copy now; keep it if something else uses it." || continue
-    sudo apt-get remove -y -q "$pkg" >/dev/null || echo "Couldn't remove $pkg."
+    found=1
+    [ "$(apt-get -s remove "$pkg" 2>/dev/null | grep -c '^Remv ')" = 1 ] || { echo "Old system packages: $pkg kept, other packages need it"; continue; }
+    if [ "$INTERACTIVE" = 1 ] && yesno "Remove $pkg? Printer Buddy installed it before and keeps its own copy now; keep it if something else uses it."; then
+      if sudo apt-get remove -y -q "$pkg" >/dev/null; then echo "Old system packages: $pkg removed"; else echo "Couldn't remove $pkg."; fi
+    else
+      echo "Old system packages: $pkg kept"
+    fi
   done
+  [ "$found" = 1 ] || echo "Old system packages: none left from Printer Buddy"
 }
 user_id() {
   local uid key old body resp code fresh=""
@@ -449,13 +480,20 @@ user_id() {
       uid="$(curl -fsS --max-time 2 "http://127.0.0.1:${port:-8080}/api/share/user-id" 2>/dev/null | sed -n 's/.*"user_id": *"\([0-9]*\)".*/\1/p')"
     fi
     old="$(get_env PB_TUNNEL_KEY)"
-    body="{${uid:+\"id\": \"$uid\"}${uid:+${old:+, \"key\": \"$old\"}}}"
+    if [ -z "$uid" ]; then
+      # the box makes its key first and keeps it, so asking again after a timeout gets the same ID
+      [ -n "$key" ] || { key="$(new_box_key)"; set_env PB_BOX_KEY "$key"; }
+      body="{\"key\": \"$key\"}"
+    else
+      body="{\"id\": \"$uid\"${old:+, \"key\": \"$old\"}}"
+    fi
     resp="$(curl -sS --max-time 30 -X POST -H "content-type: application/json" -d "$body" -w '\n%{http_code}' "$(box_api)" 2>&1)" \
       || { echo "Couldn't reach $(box_api) to get a box ID: $resp" >&2; return 1; }
     code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
     if [ -n "$uid" ] && { [ "$code" = 403 ] || [ "$code" = 409 ]; }; then
       echo "Box ID $uid belongs to another box or its key is lost, getting a new box ID." >&2
-      resp="$(curl -sS --max-time 30 -X POST -H "content-type: application/json" -d '{}' -w '\n%{http_code}' "$(box_api)" 2>&1)" \
+      key="$(new_box_key)"; set_env PB_BOX_KEY "$key"
+      resp="$(curl -sS --max-time 30 -X POST -H "content-type: application/json" -d "{\"key\": \"$key\"}" -w '\n%{http_code}' "$(box_api)" 2>&1)" \
         || { echo "Couldn't reach $(box_api) to get a box ID: $resp" >&2; return 1; }
       code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"; fresh=1
     fi
@@ -467,6 +505,7 @@ user_id() {
   fi
   echo "$uid"
 }
+new_box_key() { od -An -tx1 -N32 /dev/urandom | tr -d ' \n'; }
 tunnel_api() { local a; a="$(get_env PB_TUNNEL_API)"; echo "${a:-https://www.$(share_domain)/api/tunnel}"; }
 box_api() { local a; a="$(tunnel_api)"; echo "${a%/tunnel}/box"; }
 json_get() { python3 -c 'import sys, json

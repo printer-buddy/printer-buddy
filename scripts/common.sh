@@ -381,9 +381,12 @@ do_remove() {
 make_backup() {
   local dest="$BACKUP_DIR/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$dest"; chmod 700 "$BACKUP_DIR" "$dest" 2>/dev/null || true
-  [ -d "$DIR/data" ] && cp -a "$DIR/data" "$dest/"
-  [ -f "$ENV_FILE" ] && cp -a "$ENV_FILE" "$dest/"
-  echo "Backup saved: ${dest#$DIR/}"
+  # monitor.db is copied again through SQLite so a write in progress can't leave a half-written copy
+  if { [ ! -d "$DIR/data" ] || cp -a "$DIR/data" "$dest/"; }      && { [ ! -f "$DIR/data/monitor.db" ] || { rm -f "$dest/data/monitor.db-journal"           && python3 -c 'import sqlite3, sys; s = sqlite3.connect(sys.argv[1]); d = sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()'              "$DIR/data/monitor.db" "$dest/data/monitor.db.tmp" && mv "$dest/data/monitor.db.tmp" "$dest/data/monitor.db"; }; }      && { [ ! -f "$ENV_FILE" ] || cp -a "$ENV_FILE" "$dest/"; }; then
+    echo "Backup saved: ${dest#$DIR/}"
+  else
+    rm -rf "$dest"; echo "Backup failed, nothing was saved."; return 1
+  fi
 }
 
 restore_backup() {
@@ -395,11 +398,20 @@ restore_backup() {
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#list[@]} ] || { echo "Cancelled."; return 0; }
   local src="$BACKUP_DIR/${list[$((n - 1))]}"
   yesno "Replace your current printers and settings with ${list[$((n - 1))]}?" || { echo "Cancelled."; return 0; }
-  installed && sudo systemctl stop "$SERVICE"
-  if [ -d "$src/data" ]; then rm -rf "$DIR/data" && cp -a "$src/data" "$DIR/data"; fi
-  [ -f "$src/printer-buddy.env" ] && cp -a "$src/printer-buddy.env" "$ENV_FILE"
+  if installed && ! sudo systemctl stop "$SERVICE"; then echo "Couldn't stop Printer Buddy. Nothing was restored."; return 1; fi
+  local ok=1
+  if [ -d "$src/data" ]; then
+    rm -rf "$DIR/data.restore" "$DIR/data.old"
+    if ! cp -a "$src/data" "$DIR/data.restore"; then ok=0
+    elif [ -d "$DIR/data" ] && ! mv "$DIR/data" "$DIR/data.old"; then ok=0
+    elif mv "$DIR/data.restore" "$DIR/data"; then rm -rf "$DIR/data.old"
+    else ok=0; [ -d "$DIR/data.old" ] && mv "$DIR/data.old" "$DIR/data"; fi
+    rm -rf "$DIR/data.restore"
+  fi
+  if [ $ok = 1 ] && [ -f "$src/printer-buddy.env" ]; then cp -a "$src/printer-buddy.env" "$ENV_FILE" || ok=0; fi
   installed && sudo systemctl start "$SERVICE"
-  echo "Restored ${list[$((n - 1))]}."
+  if [ $ok = 1 ]; then echo "Restored ${list[$((n - 1))]}."
+  else echo "Couldn't restore ${list[$((n - 1))]}. Your printers and settings were kept as they were."; return 1; fi
 }
 
 share_domain() { local d; d="$(get_env PB_SHARE_DOMAIN)"; echo "${d:-printerbuddy.stream}"; }
@@ -434,7 +446,9 @@ legacy_cleanup() {
       echo "Old share tunnel service: cloudflared runs a tunnel Printer Buddy couldn't match to this box, left alone"
     fi
   fi
-  if [ -d /usr/local/lib/print-buddy-streamer ]; then
+  if [ -d /usr/local/lib/print-buddy-streamer ] && [ -d "$(getent passwd "$RUN_USER" | cut -d: -f6)/print-buddy-streamer" ]; then
+    echo "Old camera streamer files: kept, the camera streamer installed on this printer uses them"
+  elif [ -d /usr/local/lib/print-buddy-streamer ]; then
     echo "Removing the old camera streamer files..."
     sudo rm -rf /usr/local/lib/print-buddy-streamer
     echo "Old camera streamer files: removed"

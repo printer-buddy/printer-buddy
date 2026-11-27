@@ -14,7 +14,16 @@
 #   ./scripts/remote.sh off    share links only work on your home network (removes the tunnel)
 set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+rc=0
 case "${1:-}" in
-  on|off) ensure_env; set_env PB_REMOTE "$1"; NOASK=1 sync_tunnel ;;
+  on)
+    ensure_env; set_env PB_REMOTE on
+    if [ "$(tunnel_state)" = "not set up" ]; then auto_tunnel || rc=1; fi ;;
+  off)
+    ensure_env; set_env PB_REMOTE off
+    if [ "$(tunnel_state)" != "not set up" ] || [ -n "$(get_env PB_TUNNEL_KEY)" ]; then NOASK=1 remove_tunnel || rc=1; fi ;;
   *) echo "Usage: ./scripts/remote.sh on|off"; exit 1 ;;
 esac
+# Printer Buddy reads Remote access from printer-buddy.env when it starts
+if installed; then hard_restart || rc=1; fi
+exit $rc

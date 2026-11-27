@@ -398,7 +398,9 @@ restore_backup() {
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#list[@]} ] || { echo "Cancelled."; return 0; }
   local src="$BACKUP_DIR/${list[$((n - 1))]}"
   yesno "Replace your current printers and settings with ${list[$((n - 1))]}?" || { echo "Cancelled."; return 0; }
-  if installed && ! sudo systemctl stop "$SERVICE"; then echo "Couldn't stop Printer Buddy. Nothing was restored."; return 1; fi
+  exec 9>"$BACKUP_DIR/.restore.lock"
+  flock -n 9 || { exec 9>&-; echo "Another restore is running. Nothing was changed."; return 1; }
+  if installed && ! sudo systemctl stop "$SERVICE"; then exec 9>&-; echo "Couldn't stop Printer Buddy. Nothing was restored."; return 1; fi
   # copy both out of the backup first; the originals are only deleted once both are in place
   local ok=1 d_old=0 d_new=0 e_old=0 e_new=0
   rm -rf "$DIR/data.restore" "$DIR/data.old" "$ENV_FILE.restore" "$ENV_FILE.old"
@@ -422,6 +424,7 @@ restore_backup() {
   fi
   rm -rf "$DIR/data.restore" "$ENV_FILE.restore"
   installed && sudo systemctl start "$SERVICE"
+  exec 9>&-
   if [ $ok = 1 ]; then echo "Restored ${list[$((n - 1))]}."
   else echo "Couldn't restore ${list[$((n - 1))]}. Your printers and settings were kept as they were."; return 1; fi
 }

@@ -2,6 +2,50 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-27 sterling m layout/requirements-and-helper################################
+
+## Requirements files in one folder, the root helper next to the scripts
+
+The four requirements files are now `requirements/core.txt`, `requirements/ai.txt`, `requirements/ai-lite.txt` and `requirements/ai-gpu.txt`, and the root helper's source moved from `tools/restart.sh` to `scripts/restart.sh` (`tools/` is gone). The installed helper is still `/usr/local/lib/printer-buddy/restart.sh`. *Why:* fewer loose files in the Printer Buddy folder.
+
+Lines changed:
+- `requirements.txt`, `requirements-ai.txt`, `requirements-ai-lite.txt`, `requirements-ai-gpu.txt` — moved to `requirements/`
+- `tools/restart.sh` — moved to `scripts/restart.sh`
+- `app/core/updater.py` — 252, 274–275 install from `requirements/`
+- `scripts/common.sh` — 262 copies the helper from `scripts/`; 322 installs `requirements/core.txt`
+- `docker/Dockerfile` — 3 copies `requirements/core.txt`
+
+################################end of entry################################
+
+################################2026-11-27 sterling m docs/ai-page################################
+
+## The AI write-up moved to the docs site
+
+`docs/AI.md` is gone. Its model details, limits, how it was made and every credit (datasets, ideas, software) are now the docs site's [How the AI was made](https://docs.printerbuddy.ca/developers/ai-model/) page, and what's sent with Help improve the AI is on its AI failure detection page. The README links there. *Why:* the docs site is where the rest of Printer Buddy's documentation lives, and `docs/AI.md` had fallen behind it (only the basic model, old menu names).
+
+Lines changed:
+- `docs/AI.md` — removed
+- `README.md` — 38 links to the docs site page
+
+################################end of entry################################
+
+################################2026-11-27 sterling m installer/split-scripts################################
+
+## The installer menu is split into one script per job
+
+`./install.sh` no longer opens a menu. On a new box it still walks through the setup questions and installs; after that it reinstalls with the current setup, and `./install.sh --setup` reopens the setup questions and applies the changes. Its flags (`-y`, `--port`, `--ui`, `--ai`, `--video`, `--notify`, `--remote`, `--stream`, `--channel`, `--parts`, `--streamer`) work as before. `./update.sh` is now the full update the menu's Update did: the code, its parts, the root helper, camera access, the service file and a restart. The menu's other choices are their own scripts in the `scripts` folder: `./scripts/uninstall.sh`, `./scripts/backup.sh` and `./scripts/backup.sh restore`, `./scripts/port.sh [number]`, `./scripts/remote.sh on|off` and `./scripts/printer-streamer.sh light|basic|advanced`. The installer's shared code is `scripts/common.sh`. Messages that pointed at menu items now name the script to run, and "Press Enter to go back" now says "Press Enter to continue". *Why:* one script per job is quicker to run and easier to follow than a menu.
+
+Lines changed:
+- `install.sh` — whole file: 13–17 usage; 19 loads `scripts/common.sh`; 21–28 setup questions on a first run or with `--setup`, otherwise a reinstall; 30–57 the flags, as before (34 adds `--setup` to the usage)
+- `scripts/common.sh` — new: the installer's settings and functions (from `install.sh` 19–571 and 605–732, without the menu and the backup menu); 65 "continue"; 160–176 port messages, and `change_port` takes a port number; 179, 181, 548 remote messages; 603, 613, 629 setup-question wording
+- `update.sh` — whole file: runs the full update (15 loads `scripts/common.sh`)
+- `scripts/uninstall.sh`, `scripts/backup.sh`, `scripts/port.sh`, `scripts/remote.sh`, `scripts/printer-streamer.sh` — new
+- `app/core/components.py` — 248, 254 say to run `./update.sh`
+- `app/core/tunnel.py` — 155, `app/main.py` — 1036, 1038 say to run `./scripts/remote.sh on`
+- `README.md` — 23 `./scripts/port.sh`; 28 what `./update.sh` does
+
+################################end of entry################################
+
 ################################2026-11-26 sterling m themes/list################################
 
 ## Themes from the theme list replace copying a Fluidd or Mainsail theme

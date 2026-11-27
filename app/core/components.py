@@ -245,11 +245,11 @@ def system_action(action: str, service: str | None) -> tuple[bool, str]:
         return False, f"can't {action} {service or 'the host'}"
     helper = updater.helper()
     if not helper:
-        return False, "The root helper isn't set up yet: run ./install.sh and pick Update once."
+        return False, "The root helper isn't set up yet: run ./update.sh once."
     try:
         p = subprocess.run(["sudo", "-n", helper, job], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as ex:
         return False, str(ex)
     if p.returncode == 2 and job in ("reboot", "shutdown"):
-        return False, "This box's root helper is older: run ./install.sh and pick Update once."
+        return False, "This box's root helper is older: run ./update.sh once."
     return p.returncode == 0, (p.stdout + p.stderr).strip()[-500:]

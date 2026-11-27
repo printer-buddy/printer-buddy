@@ -399,16 +399,28 @@ restore_backup() {
   local src="$BACKUP_DIR/${list[$((n - 1))]}"
   yesno "Replace your current printers and settings with ${list[$((n - 1))]}?" || { echo "Cancelled."; return 0; }
   if installed && ! sudo systemctl stop "$SERVICE"; then echo "Couldn't stop Printer Buddy. Nothing was restored."; return 1; fi
-  local ok=1
-  if [ -d "$src/data" ]; then
-    rm -rf "$DIR/data.restore" "$DIR/data.old"
-    if ! cp -a "$src/data" "$DIR/data.restore"; then ok=0
-    elif [ -d "$DIR/data" ] && ! mv "$DIR/data" "$DIR/data.old"; then ok=0
-    elif mv "$DIR/data.restore" "$DIR/data"; then rm -rf "$DIR/data.old"
-    else ok=0; [ -d "$DIR/data.old" ] && mv "$DIR/data.old" "$DIR/data"; fi
-    rm -rf "$DIR/data.restore"
+  # copy both out of the backup first; the originals are only deleted once both are in place
+  local ok=1 d_old=0 d_new=0 e_old=0 e_new=0
+  rm -rf "$DIR/data.restore" "$DIR/data.old" "$ENV_FILE.restore" "$ENV_FILE.old"
+  if [ -d "$src/data" ] && ! cp -a "$src/data" "$DIR/data.restore"; then ok=0; fi
+  if [ $ok = 1 ] && [ -f "$src/printer-buddy.env" ] && ! cp -a "$src/printer-buddy.env" "$ENV_FILE.restore"; then ok=0; fi
+  if [ $ok = 1 ] && [ -d "$DIR/data.restore" ]; then
+    if [ -d "$DIR/data" ]; then mv "$DIR/data" "$DIR/data.old" && d_old=1 || ok=0; fi
+    if [ $ok = 1 ]; then mv "$DIR/data.restore" "$DIR/data" && d_new=1 || ok=0; fi
   fi
-  if [ $ok = 1 ] && [ -f "$src/printer-buddy.env" ]; then cp -a "$src/printer-buddy.env" "$ENV_FILE" || ok=0; fi
+  if [ $ok = 1 ] && [ -f "$ENV_FILE.restore" ]; then
+    if [ -f "$ENV_FILE" ]; then mv "$ENV_FILE" "$ENV_FILE.old" && e_old=1 || ok=0; fi
+    if [ $ok = 1 ]; then mv "$ENV_FILE.restore" "$ENV_FILE" && e_new=1 || ok=0; fi
+  fi
+  if [ $ok = 1 ]; then
+    rm -rf "$DIR/data.old" "$ENV_FILE.old"
+  else
+    [ $d_new = 1 ] && rm -rf "$DIR/data"
+    [ $d_old = 1 ] && mv "$DIR/data.old" "$DIR/data"
+    [ $e_new = 1 ] && rm -f "$ENV_FILE"
+    [ $e_old = 1 ] && mv "$ENV_FILE.old" "$ENV_FILE"
+  fi
+  rm -rf "$DIR/data.restore" "$ENV_FILE.restore"
   installed && sudo systemctl start "$SERVICE"
   if [ $ok = 1 ]; then echo "Restored ${list[$((n - 1))]}."
   else echo "Couldn't restore ${list[$((n - 1))]}. Your printers and settings were kept as they were."; return 1; fi

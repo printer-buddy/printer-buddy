@@ -17,10 +17,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 rc=0
 case "${1:-}" in
   on)
-    ensure_env; set_env PB_REMOTE on
+    ensure_env; set_env PB_REMOTE on || { echo "Couldn't save Remote access to printer-buddy.env."; exit 1; }
     if [ "$(tunnel_state)" = "not set up" ]; then auto_tunnel || rc=1; fi ;;
   off)
-    ensure_env; set_env PB_REMOTE off
+    ensure_env; set_env PB_REMOTE off || { echo "Couldn't save Remote access to printer-buddy.env."; exit 1; }
     if [ "$(tunnel_state)" != "not set up" ] || [ -n "$(get_env PB_TUNNEL_KEY)" ]; then NOASK=1 remove_tunnel || rc=1; fi ;;
   *) echo "Usage: ./scripts/remote.sh on|off"; exit 1 ;;
 esac

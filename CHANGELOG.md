@@ -6,11 +6,11 @@ All changes to Printer Buddy, newest first.
 
 ## Safer backup and restore, and remote.sh applies its change
 
-`./scripts/remote.sh on|off` now restarts Printer Buddy so the change takes effect (the app reads Remote access when it starts), and exits with an error when setting up or removing the tunnel fails instead of always succeeding. A backup now copies the database through SQLite, so a write in progress can't leave a half-written copy, and says "Backup failed" (and keeps nothing) when a copy fails instead of "Backup saved". A restore copies the backup next to `data/` first and only swaps it in when that worked; if anything fails your current printers and settings stay as they were and it says so. Update no longer deletes `/usr/local/lib/print-buddy-streamer` when the printer-side camera streamer (`~/print-buddy-streamer`) is installed on the same machine, since that streamer keeps mjpg-streamer there. The "Remote access isn't finished" message now says to run `./scripts/remote.sh off` and then `on`, which also fixes a missing box ID. *Why:* review of the installer split.
+`./scripts/remote.sh on|off` now restarts Printer Buddy so the change takes effect (the app reads Remote access when it starts), and exits with an error when it can't save the setting or when setting up or removing the tunnel fails, instead of always succeeding. A backup now copies the database through SQLite, so a write in progress can't leave a half-written copy, and says "Backup failed" (and keeps nothing) when a copy fails instead of "Backup saved". A restore copies the backup's `data/` and `printer-buddy.env` next to yours first, swaps both in, and only then deletes your old ones; if any step fails both of yours are put back and it says so. Update no longer deletes `/usr/local/lib/print-buddy-streamer` when the printer-side camera streamer (`~/print-buddy-streamer`) is installed on the same machine, since that streamer keeps mjpg-streamer there. The "Remote access isn't finished" message now says to run `./scripts/remote.sh off` and then `on`, which also fixes a missing box ID. *Why:* review of the installer split.
 
 Lines changed:
-- `scripts/remote.sh` — 17–29 set up or remove the tunnel directly, restart, and return the result
-- `scripts/common.sh` — 381–391 backup through SQLite with checked copies; 392–416 restore through a temporary copy; 449–451 keep the streamer folder when the printer-side streamer uses it
+- `scripts/remote.sh` — 17–29 save the setting (stop if that fails), set up or remove the tunnel directly, restart, and return the result
+- `scripts/common.sh` — 381–391 backup through SQLite with checked copies; 392–428 restore through temporary copies of `data/` and `printer-buddy.env`, putting both back on failure; 461–463 keep the streamer folder when the printer-side streamer uses it
 - `app/core/tunnel.py` — 155 the recovery message
 
 ################################end of entry################################

@@ -20,12 +20,12 @@ Then open `http://<box-ip>:8080`. Settings (notifications, subnets) live in `pri
 
 **Port:** Printer Buddy uses 8080. If something else already has it (often the webcam streamer on
 Klipper boxes), the installer says what's using it and offers the next free port. Change it later
-with **P) Change port** in the menu, or `./install.sh -y --port 8081` (the port must be free).
+with `./scripts/port.sh 8081` (the port must be free).
 
 ## Update
 
 ```bash
-cd printer-buddy && ./update.sh     # git pull + restart
+cd printer-buddy && ./update.sh     # updates Printer Buddy and its parts, then restarts it
 ```
 
 Logs: `journalctl -u printer-buddy -f`.
@@ -35,7 +35,7 @@ Docker is still supported if you want it: `docker compose -f docker/docker-compo
 ## AI failure detection
 
 Printer Buddy's own model scores camera snapshots for spaghetti, warping, first-layer problems,
-stringing, blobs and cracks. See **[docs/AI.md](docs/AI.md)** for how it works, test results, limits and
+stringing, blobs and cracks. See **[How the AI was made](https://docs.printerbuddy.ca/developers/ai-model/)** for how it works, test results, limits and
 dataset credits. Models: [releases tagged `ai-`](https://github.com/printer-buddy/printer-buddy/releases?q=ai-&expanded=true).
 
 ## How it works

@@ -249,7 +249,7 @@ def helper() -> str | None:
 def pip() -> bool:
     if not (VENV / "pip").exists():
         return True
-    ok = run(VENV / "pip", "install", "-q", "-r", ROOT / "requirements.txt")
+    ok = run(VENV / "pip", "install", "-q", "-r", ROOT / "requirements" / "core.txt")
     say("Python libraries: checked" if ok else "Python libraries: couldn't be updated, see above")
     return ok
 
@@ -271,8 +271,8 @@ def ensure_ai() -> bool:
     if gpu:
         # onnxruntime and onnxruntime-gpu can't be installed together
         run(VENV / "pip", "uninstall", "-q", "-y", "onnxruntime")
-    reqs = "requirements-ai-lite.txt" if kind == "lite" else "requirements-ai-gpu.txt" if gpu else "requirements-ai.txt"
-    if not run(VENV / "pip", "install", "-q", "-r", ROOT / reqs):
+    reqs = "ai-lite.txt" if kind == "lite" else "ai-gpu.txt" if gpu else "ai.txt"
+    if not run(VENV / "pip", "install", "-q", "-r", ROOT / "requirements" / reqs):
         say("Couldn't install the AI libraries. Skipping AI; everything else works.")
         return True
     (ROOT / "data" / "ai").mkdir(parents=True, exist_ok=True)

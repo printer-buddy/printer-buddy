@@ -152,7 +152,7 @@ class Tunnel:
     async def _tick(self):
         setup = self._setup()
         if not setup:
-            self.error = ("Remote access isn't finished: run the installer, then Change setup > Remote access."
+            self.error = ("Remote access isn't finished: run ./scripts/remote.sh off and then ./scripts/remote.sh on in the Printer Buddy folder."
                           if _setting("PB_REMOTE") == "on" else None)
             await self._stop_proc()
             return

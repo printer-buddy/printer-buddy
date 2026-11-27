@@ -2,6 +2,63 @@
 
 All changes to Printer Buddy, newest first.
 
+################################2026-11-27 sterling m installer/review-fixes################################
+
+## Safer backup and restore, and remote.sh applies its change
+
+`./scripts/remote.sh on|off` now restarts Printer Buddy so the change takes effect (the app reads Remote access when it starts), and exits with an error when it can't save the setting or when setting up or removing the tunnel fails, instead of always succeeding. A backup now copies the database through SQLite, so a write in progress can't leave a half-written copy, and says "Backup failed" (and keeps nothing) when a copy fails instead of "Backup saved". A restore copies the backup's `data/` and `printer-buddy.env` next to yours first, swaps both in, and only then deletes your old ones; if any step fails both of yours are put back and it says so. Only one restore can run at a time; a second one stops with "Another restore is running" before changing anything. Update no longer deletes `/usr/local/lib/print-buddy-streamer` when the printer-side camera streamer (`~/print-buddy-streamer`) is installed on the same machine, since that streamer keeps mjpg-streamer there. The "Remote access isn't finished" message now says to run `./scripts/remote.sh off` and then `on`, which also fixes a missing box ID. *Why:* review of the installer split.
+
+Lines changed:
+- `scripts/remote.sh` — 17–29 save the setting (stop if that fails), set up or remove the tunnel directly, restart, and return the result
+- `scripts/common.sh` — 381–391 backup through SQLite with checked copies; 392–430 restore through temporary copies of `data/` and `printer-buddy.env`, putting both back on failure, one restore at a time (401–402 the lock); 464–466 keep the streamer folder when the printer-side streamer uses it
+- `app/core/tunnel.py` — 155 the recovery message
+
+################################end of entry################################
+
+################################2026-11-27 sterling m layout/requirements-and-helper################################
+
+## Requirements files in one folder, the root helper next to the scripts
+
+The four requirements files are now `requirements/core.txt`, `requirements/ai.txt`, `requirements/ai-lite.txt` and `requirements/ai-gpu.txt`, and the root helper's source moved from `tools/restart.sh` to `scripts/restart.sh` (`tools/` is gone). The installed helper is still `/usr/local/lib/printer-buddy/restart.sh`. *Why:* fewer loose files in the Printer Buddy folder.
+
+Lines changed:
+- `requirements.txt`, `requirements-ai.txt`, `requirements-ai-lite.txt`, `requirements-ai-gpu.txt` — moved to `requirements/`
+- `tools/restart.sh` — moved to `scripts/restart.sh`
+- `app/core/updater.py` — 252, 274–275 install from `requirements/`
+- `scripts/common.sh` — 262 copies the helper from `scripts/`; 322 installs `requirements/core.txt`
+- `docker/Dockerfile` — 3 copies `requirements/core.txt`
+
+################################end of entry################################
+
+################################2026-11-27 sterling m docs/ai-page################################
+
+## The AI write-up moved to the docs site
+
+`docs/AI.md` is gone. Its model details, limits, how it was made and every credit (datasets, ideas, software) are now the docs site's [How the AI was made](https://docs.printerbuddy.ca/developers/ai-model/) page, and what's sent with Help improve the AI is on its AI failure detection page. The README links there. *Why:* the docs site is where the rest of Printer Buddy's documentation lives, and `docs/AI.md` had fallen behind it (only the basic model, old menu names).
+
+Lines changed:
+- `docs/AI.md` — removed
+- `README.md` — 38 links to the docs site page
+
+################################end of entry################################
+
+################################2026-11-27 sterling m installer/split-scripts################################
+
+## The installer menu is split into one script per job
+
+`./install.sh` no longer opens a menu. On a new box it still walks through the setup questions and installs; after that it reinstalls with the current setup, and `./install.sh --setup` reopens the setup questions and applies the changes. Its flags (`-y`, `--port`, `--ui`, `--ai`, `--video`, `--notify`, `--remote`, `--stream`, `--channel`, `--parts`, `--streamer`) work as before. `./update.sh` is now the full update the menu's Update did: the code, its parts, the root helper, camera access, the service file and a restart. The menu's other choices are their own scripts in the `scripts` folder: `./scripts/uninstall.sh`, `./scripts/backup.sh` and `./scripts/backup.sh restore`, `./scripts/port.sh [number]`, `./scripts/remote.sh on|off` and `./scripts/printer-streamer.sh light|basic|advanced`. The installer's shared code is `scripts/common.sh`. Messages that pointed at menu items now name the script to run, and "Press Enter to go back" now says "Press Enter to continue". *Why:* one script per job is quicker to run and easier to follow than a menu.
+
+Lines changed:
+- `install.sh` — whole file: 13–17 usage; 19 loads `scripts/common.sh`; 21–28 setup questions on a first run or with `--setup`, otherwise a reinstall; 30–57 the flags, as before (34 adds `--setup` to the usage)
+- `scripts/common.sh` — new: the installer's settings and functions (from `install.sh` 19–571 and 605–732, without the menu and the backup menu); 65 "continue"; 160–176 port messages, and `change_port` takes a port number; 179, 181, 548 remote messages; 603, 613, 629 setup-question wording
+- `update.sh` — whole file: runs the full update (15 loads `scripts/common.sh`)
+- `scripts/uninstall.sh`, `scripts/backup.sh`, `scripts/port.sh`, `scripts/remote.sh`, `scripts/printer-streamer.sh` — new
+- `app/core/components.py` — 248, 254 say to run `./update.sh`
+- `app/core/tunnel.py` — 155, `app/main.py` — 1036, 1038 say to run `./scripts/remote.sh on`
+- `README.md` — 23 `./scripts/port.sh`; 28 what `./update.sh` does
+
+################################end of entry################################
+
 ################################2026-11-26 sterling m themes/list################################
 
 ## Themes from the theme list replace copying a Fluidd or Mainsail theme

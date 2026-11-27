@@ -1033,9 +1033,9 @@ async def create_share(request: Request):
     if pid is None:
         return err("not found", 404)
     if not remote_on():
-        return err("share links need Remote access on (installer: Change setup)", 403)
+        return err("share links need Remote access on (run ./scripts/remote.sh on)", 403)
     if share_domain() and not registered_id():
-        return err("Remote access isn't finished: run the installer, then Change setup > Remote access.", 409)
+        return err("Remote access isn't finished: run ./scripts/remote.sh on in the Printer Buddy folder.", 409)
     b = await body(request)
     expiry = b.get("expires", "1d")
     if expiry not in SHARE_EXPIRY:
